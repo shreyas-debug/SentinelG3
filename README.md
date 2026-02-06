@@ -289,14 +289,3 @@ SentinelG3/
 
 ---
 
-## Hackathon
-
-**Gemini 3 Hackathon** — *Build what's next*
-- Deadline: **Feb 9, 2026 @ 5:00 PM PST**
-- [gemini3.devpost.com](https://gemini3.devpost.com/)
-
----
-
-## License
-
-MIT

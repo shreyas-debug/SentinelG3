@@ -1,0 +1,16 @@
+complete Sentinel-G3 autonomous self-healing security auditor
+
+- FastAPI backend with Auditor and Fixer agents using Gemini 3 Pro
+  (thinking_level=HIGH) for deep vulnerability reasoning
+- SentinelOrchestrator coordinating the full Audit -> Fix pipeline
+  with thought_signature audit trail in run_manifest.json
+- SSE streaming endpoint for real-time scan progress
+- Next.js 15 dashboard with dark war-room UI, live feed terminal,
+  expandable chain-of-thought display, and Shiki syntax-highlighted
+  code diffs with thinking animation
+- Vulnerability Lab (test_lab/) with 13 planted vulns across SQL
+  injection, hardcoded secrets, and broken auth categories
+- Integration test suite with Hackathon Readiness Report including
+  Reasoning Quality scorecard (CoT density, signature integrity,
+  heal efficiency)
+
