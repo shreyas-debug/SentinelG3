@@ -1,0 +1,68 @@
+---
+description: Sentinel-G3 project conventions — Gemini 3 Pro reasoning patterns, security-first development, and agentic architecture standards.
+alwaysApply: true
+---
+
+# Sentinel-G3 | Project Rules
+
+## Gemini 3 Pro Reasoning Patterns
+
+- Always use `thinking_level='high'` when calling Gemini for any security analysis, vulnerability detection, or threat modelling tasks.
+- Use `thinking_level='medium'` for general-purpose agent calls (fix generation, documentation).
+
+```python
+# ✅ GOOD — security analysis with high reasoning
+response = client.models.generate_content(
+    model="gemini-3-pro",
+    contents=prompt,
+    config={"thinking_config": {"thinking_level": "HIGH"}},
+)
+
+# ❌ BAD — security analysis without elevated reasoning
+response = client.models.generate_content(
+    model="gemini-3-pro",
+    contents=prompt,
+)
+```
+
+## Code Execution for Patch Validation
+
+- When validating security patches, prioritize Gemini's **Code Execution** tool so the model can run and test fixes in a sandboxed environment rather than relying on static reasoning alone.
+
+```python
+# ✅ GOOD — use code execution to validate patches
+from google.genai import types
+
+response = client.models.generate_content(
+    model="gemini-3-pro",
+    contents="Validate this security patch...",
+    config=types.GenerateContentConfig(
+        tools=[types.Tool(code_execution=types.ToolCodeExecution())],
+    ),
+)
+```
+
+## Structured Agent Responses
+
+- **All** agent inputs and outputs must be defined as Pydantic `BaseModel` subclasses in `app/models/schemas.py`.
+- Never return raw dicts from agents — always parse into a typed schema.
+
+```python
+# ✅ GOOD
+class AuditResult(BaseModel):
+    findings: list[Finding]
+    severity_summary: dict[str, int]
+
+# ❌ BAD
+return {"findings": [...], "severity_summary": {...}}
+```
+
+## Security-First Mindset (OWASP)
+
+When writing any code in this project, actively guard against common OWASP Top 10 vulnerabilities:
+
+- **Injection**: Never interpolate user input into prompts, queries, or shell commands. Use parameterised queries and sanitise all inputs.
+- **Broken Auth**: Validate API keys server-side; never expose secrets in responses or logs.
+- **Sensitive Data Exposure**: Never log API keys, tokens, or raw source code from audits. Redact before logging.
+- **Security Misconfiguration**: Use strict CORS, disable debug mode in production, validate all env vars at startup.
+- **SSRF**: If fetching repo URLs, validate and allowlist schemes/hosts before making outbound requests.
