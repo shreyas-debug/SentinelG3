@@ -1,96 +1,233 @@
-# Sentinel-G3
+<p align="center">
+  <img src="https://img.shields.io/badge/Gemini_3_Pro-thinking__level%3DHIGH-4285F4?style=for-the-badge&logo=google&logoColor=white" alt="Gemini 3 Pro" />
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Next.js_15-000000?style=for-the-badge&logo=next.js&logoColor=white" alt="Next.js" />
+  <img src="https://img.shields.io/badge/Python_3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
+</p>
 
-> **Autonomous, Self-Healing Security Auditor** powered by [Google Gemini 3 Pro](https://deepmind.google/technologies/gemini/) with deep chain-of-thought reasoning.
-
-Built for the [Gemini 3 Hackathon](https://gemini3.devpost.com/).
-
----
-
-## What is Sentinel-G3?
-
-Sentinel-G3 is an AI-native security tool that **finds vulnerabilities, reasons through fixes, and applies them autonomously** — all in a single pipeline. Instead of handing developers a list of problems and walking away, Sentinel-G3 closes the loop by leveraging the advanced **thinking capabilities** of Google's Gemini 3 Pro model.
-
-Every decision the AI makes is transparent: the full **chain-of-thought** from both the Auditor and Fixer agents is captured, signed with `thought_signature` blobs, and displayed in a real-time dashboard so you can see *why* the AI made each choice.
-
----
-
-## Demo
-
-```
-              .     .
-             / \   / \
-            /   \_/   \
-           | SENTINEL  |
-           |  - G3 -   |
-            \         /
-             \       /
-              \     /
-               \   /
-                V
-```
-
-1. Point Sentinel-G3 at a codebase
-2. Watch the Auditor discover SQL injections, hardcoded secrets, broken auth
-3. Watch the Fixer generate parameterized queries, env-var lookups, safe comparisons
-4. Verify patches are syntax-safe and the audit trail is cryptographically signed
-5. Explore the AI's reasoning in the real-time dashboard
+<h1 align="center">Sentinel-G3</h1>
+<p align="center"><strong>Autonomous Self-Healing Security Auditor</strong></p>
+<p align="center">
+  <em>An AI that doesn't just find vulnerabilities — it <b>reasons</b> through them, <b>fixes</b> them,<br/>
+  and <b>proves</b> every decision with a cryptographically signed chain of thought.</em>
+</p>
+<p align="center">
+  Built for the <a href="https://gemini3.devpost.com/">Gemini 3 Hackathon</a> &middot; Powered by <a href="https://deepmind.google/technologies/gemini/">Google Gemini 3 Pro</a> + <code>google-genai</code> SDK
+</p>
 
 ---
 
-## Agentic Architecture
+## Proof of Reasoning
 
-The core of Sentinel-G3 is a **three-stage autonomous pipeline** where each stage is a specialised AI agent. The agents communicate through a shared context and the entire cycle is orchestrated by `SentinelOrchestrator`.
+> When a judge clicks on any vulnerability, they see exactly what the AI was thinking — not a black box, but a glass box.
 
+<!-- Replace with actual screenshot after a successful run -->
+<!-- ![Dashboard Screenshot](docs/dashboard-screenshot.png) -->
+
+| Auditor Reasoning | Fixer Reasoning |
+|---|---|
+| *"I noticed a string interpolation in a SQL query on line 18. This is a classic injection point because user input flows directly into `f"SELECT ... WHERE name = '{username}'"` without sanitisation..."* | *"To fix this, I am implementing parameterized queries using the sqlite3 driver's `?` placeholder syntax. This ensures input is treated as data, never as SQL..."* |
+
+The full chain-of-thought from both agents is captured with Gemini 3's `thought_signature` — a cryptographic proof that this reasoning actually happened inside the model, not fabricated after the fact.
+
+---
+
+## Why Sentinel-G3?
+
+Most security scanners hand you a list of problems and walk away. Sentinel-G3 **closes the loop**:
+
+1. **Finds** vulnerabilities using Gemini 3 Pro with `thinking_level=HIGH` — deep reasoning, not regex
+2. **Fixes** them autonomously — generating syntax-safe patches with backup safety nets
+3. **Proves** every decision — signed audit trail with full chain-of-thought transparency
+
+This is not a wrapper around an LLM. It's an **agentic system** where specialised AI agents collaborate, reason through edge cases, and produce verifiable output.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Pipeline["Sentinel-G3 Self-Healing Pipeline"]
+        direction LR
+        A["🔍 Auditor Agent<br/><i>thinking_level=HIGH</i><br/>Scan &amp; detect vulnerabilities"]
+        F["🔧 Fixer Agent<br/><i>thinking_level=HIGH</i><br/>Generate security patches"]
+        V["✅ Validator<br/>Verify fix integrity"]
+    end
+
+    subgraph Gemini["Google Gemini 3 Pro"]
+        G["generate_content()<br/>+ ThinkingConfig<br/>+ response_schema"]
+    end
+
+    subgraph Output["Audit Trail"]
+        M["run_manifest.json<br/>thought_signatures<br/>patch outcomes"]
+        D["Real-Time Dashboard<br/>Chain of Thought<br/>Code Diffs"]
+    end
+
+    A -->|vulnerabilities| F
+    F -->|patches| V
+    A -.->|async| G
+    F -.->|async| G
+    A -->|thought_signature| M
+    F -->|thought_signature| M
+    M --> D
+
+    style A fill:#f59e0b,stroke:#92400e,color:#000
+    style F fill:#10b981,stroke:#065f46,color:#000
+    style V fill:#06b6d4,stroke:#0e7490,color:#000
+    style G fill:#4285F4,stroke:#1a56db,color:#fff
+    style M fill:#1e293b,stroke:#475569,color:#e2e8f0
+    style D fill:#1e293b,stroke:#475569,color:#e2e8f0
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Sentinel-G3 Pipeline                        │
-│                                                                  │
-│   ┌────────────┐      ┌────────────┐      ┌──────────────┐      │
-│   │  AUDITOR   │─────>│   FIXER    │─────>│  VALIDATOR    │     │
-│   │  Agent     │      │   Agent    │      │   Agent       │     │
-│   └────────────┘      └────────────┘      └──────────────┘      │
-│        │                    │                    │                │
-│   Scan & detect        Generate patches    Re-audit patched      │
-│   vulnerabilities      via Gemini 3 Pro    code to confirm       │
-│   (thinking: HIGH)     (thinking: HIGH)    resolution            │
-│        │                    │                    │                │
-│   thought_signature    thought_signature    Pass / Fail           │
-│   captured             captured             (loop if needed)     │
-│                                                                  │
-│   ┌──────────────────────────────────────────────────────────┐   │
-│   │              run_manifest.json (Audit Trail)             │   │
-│   │  - Full thought signatures for every Gemini call         │   │
-│   │  - Vulnerability details + patch outcomes                │   │
-│   │  - Timestamped, signed, verifiable                       │   │
-│   └──────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
+
+### How the Agents Use Gemini 3 Pro
+
+**Auditor Agent** (`app/agents/auditor.py`)
+```python
+response = await client.aio.models.generate_content(
+    model="gemini-3-pro-preview",
+    contents=prompt,
+    config=types.GenerateContentConfig(
+        system_instruction="You are an elite security researcher...",
+        thinking_config=types.ThinkingConfig(thinking_level="HIGH"),
+        response_mime_type="application/json",
+        response_schema=list[Vulnerability],  # Structured output
+    ),
+)
 ```
 
-### Stage 1 — Auditor Agent
+**Fixer Agent** (`app/agents/fixer.py`)
+```python
+response = await client.aio.models.generate_content(
+    model="gemini-3-pro-preview",
+    contents=prompt,
+    config=types.GenerateContentConfig(
+        system_instruction="You are a Senior Security Engineer...",
+        thinking_config=types.ThinkingConfig(thinking_level="HIGH"),
+    ),
+)
+```
 
-| Aspect       | Detail |
+**Orchestrator** (`app/orchestrator.py`) — captures the thought signatures:
+```python
+for part in response.candidates[0].content.parts:
+    if part.thought and part.thought_signature:
+        # Cryptographic proof of reasoning
+        base64.b64encode(part.thought_signature)
+```
+
+---
+
+## Prerequisites
+
+| Requirement | Version | Why |
+|---|---|---|
+| **Python** | 3.12+ | Required for modern type syntax (`X \| Y`, generics) |
+| **Node.js** | 18+ | Required for the Next.js 15 dashboard |
+| **Gemini API Key** | — | Get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| **`google-genai` SDK** | >=1.51.0 | The official Python SDK for Gemini 3 — includes `ThinkingConfig`, `thought_signature`, async support |
+
+> **Important:** This project uses `google-genai` (the new unified SDK), **not** the older `google-generativeai` package. Make sure you install the right one.
+
+---
+
+## Getting Started
+
+### 1. Clone & Install
+
+```bash
+git clone https://github.com/shreyas-debug/SentinelG3.git
+cd SentinelG3
+
+# Create virtual environment
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS / Linux
+
+# Install Python dependencies (includes google-genai with aiohttp)
+pip install -r requirements.txt
+```
+
+### 2. Configure Your API Key
+
+```bash
+copy .env.template .env       # Windows
+# cp .env.template .env       # macOS / Linux
+```
+
+Open `.env` and add your Gemini API key:
+```
+GEMINI_API_KEY=your-key-from-aistudio
+```
+
+### 3. Start the Backend
+
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+The API will be live at **http://127.0.0.1:8000** (interactive docs at `/docs`).
+
+### 4. Start the Dashboard
+
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+Open **http://localhost:3000**, enter a target directory (e.g. `test_lab/`), and hit **Run Security Scan**.
+
+### 5. Run the Integration Test
+
+```bash
+python scripts/run_integration_test.py
+```
+
+This runs the full pipeline against the **Vulnerability Lab** and prints a Hackathon Readiness Report.
+
+---
+
+## Vulnerability Lab (`test_lab/`)
+
+We built a controlled test environment with **13 deliberately planted vulnerabilities** across three categories. This gives the agents a predictable, reproducible playground that judges can verify.
+
+| File | Vulnerability Type | Count | What it Tests |
+|---|---|---|---|
+| `sql_lab.py` | SQL Injection | 3 | f-string interpolation, string concatenation, `.format()` — Fixer must produce parameterized queries |
+| `secret_lab.js` | Hardcoded Secrets | 5 | API keys, DB passwords, JWT secrets, AWS credentials — Auditor must catch all, Fixer must replace with `process.env` |
+| `logic_lab.py` | Broken Auth & Logic Flaws | 5 | `or` vs `and` bug, privilege escalation, timing attack, session fixation, missing rate limit — requires **genuine reasoning**, not pattern matching |
+
+Pristine originals are preserved in `test_lab_golden/` and auto-restored before each test run.
+
+---
+
+## Real-Time Dashboard
+
+The Next.js 15 dashboard connects to the backend via **Server-Sent Events** for live streaming:
+
+- **Live Feed** — terminal-style log output as the orchestrator progresses
+- **Healing History** — expandable table with severity badges and status
+- **Chain of Thought** — side-by-side Auditor and Fixer reasoning panels
+- **Code Diff** — Shiki syntax-highlighted side-by-side comparison (original vs. healed)
+- **Thinking Animation** — pulsing progress bars while Gemini reasons
+- **Dark "War Room" Aesthetic** — emerald for healed, amber for threats, red for critical
+
+---
+
+## Integration Test & Readiness Report
+
+`scripts/run_integration_test.py` provides automated end-to-end validation:
+
+| Phase | What it checks |
 |---|---|
-| **Purpose**  | Deep static analysis of `.py` and `.js` source files for security vulnerabilities |
-| **Gemini 3** | `thinking_level=HIGH` with `response_schema=list[Vulnerability]` for structured JSON output |
-| **Output**   | A list of `Vulnerability` objects (severity, issue, file_path, line_number, fix_suggestion) |
-| **Resilience** | Exponential backoff retry (2s, 4s, 8s) on 429 rate limits; 1s delay between files |
-
-### Stage 2 — Fixer Agent
-
-| Aspect       | Detail |
-|---|---|
-| **Purpose**  | Generate minimal, targeted patches that remediate each finding |
-| **Gemini 3** | `thinking_level=HIGH` prompting the model as a Senior Security Engineer |
-| **Output**   | `PatchResult` with original and fixed code; auto-backup before overwrite |
-| **Safety**   | Creates timestamped `.bak` files before every patch; async file I/O |
-
-### Stage 3 — Orchestrator
-
-| Aspect       | Detail |
-|---|---|
-| **Purpose**  | Coordinate the full Audit → Fix cycle and produce the audit trail |
-| **Output**   | `HealingCycleSummary` + `run_manifest.json` with `thought_signature` entries |
-| **Transparency** | Extracts full chain-of-thought text from Gemini responses for dashboard display |
+| **Phase 1** — Cleanup | Removes old manifests, backups; restores golden copies |
+| **Phase 2** — Execute | Runs `SentinelOrchestrator.run_self_healing_cycle()` against `test_lab/` |
+| **Phase 3a** — Mutation | Verifies files in `test_lab/` actually changed |
+| **Phase 3b** — Backups | Confirms `.bak` files exist for every modified file |
+| **Phase 3c** — Manifest | Validates `run_manifest.json` structure and `thought_signature` entries |
+| **Phase 3d** — Reasoning Quality | **CoT Density** (reasoning depth), **Signature Integrity** (base64 validation), **Heal Efficiency** (syntax-safe patches) |
+| **Phase 4** — Verdict | Composite score, per-vulnerability breakdown, ASCII art verdict |
 
 ---
 
@@ -99,162 +236,34 @@ The core of Sentinel-G3 is a **three-stage autonomous pipeline** where each stag
 ```
 SentinelG3/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py                 # FastAPI entry-point (CORS, routes, startup)
-│   ├── config.py               # Environment & settings (Gemini API key)
-│   ├── orchestrator.py         # SentinelOrchestrator — full pipeline coordinator
+│   ├── main.py                 # FastAPI entry-point (CORS, health check)
+│   ├── config.py               # Gemini API key + settings from .env
+│   ├── orchestrator.py         # SentinelOrchestrator — pipeline coordinator
 │   ├── agents/
-│   │   ├── __init__.py
 │   │   ├── base.py             # Abstract BaseAgent (Gemini client init)
-│   │   ├── auditor.py          # Stage 1 — vulnerability scanning
-│   │   ├── fixer.py            # Stage 2 — patch generation & application
-│   │   └── validator.py        # Stage 3 — fix verification (future)
+│   │   ├── auditor.py          # Stage 1 — thinking_level=HIGH vulnerability scan
+│   │   ├── fixer.py            # Stage 2 — thinking_level=HIGH patch generation
+│   │   └── validator.py        # Stage 3 — fix verification (extensible)
 │   ├── api/
-│   │   ├── __init__.py
 │   │   └── routes.py           # SSE /scan endpoint + /history
 │   └── models/
-│       ├── __init__.py
-│       └── schemas.py          # Pydantic models (Vulnerability, PatchResult, etc.)
+│       └── schemas.py          # Pydantic v2 models (Vulnerability, PatchResult, etc.)
 │
-├── dashboard/                  # Next.js 15 real-time dashboard
-│   ├── src/
-│   │   ├── app/
-│   │   │   ├── globals.css     # Dark war-room theme (emerald/amber/red)
-│   │   │   ├── layout.tsx      # Root layout
-│   │   │   └── page.tsx        # Main dashboard page
-│   │   ├── components/
-│   │   │   ├── scan-button.tsx
-│   │   │   ├── live-feed.tsx           # Real-time SSE log terminal
-│   │   │   ├── healing-history.tsx     # Expandable vulnerability table
-│   │   │   ├── stats-bar.tsx           # Scan statistics
-│   │   │   ├── code-diff.tsx           # Side-by-side diff (Shiki syntax)
-│   │   │   ├── syntax-highlight.tsx    # Shiki highlighter singleton
-│   │   │   ├── thinking-indicator.tsx  # Pulsing "AI is thinking" animation
-│   │   │   └── ui/badge.tsx
-│   │   └── lib/
-│   │       ├── api.ts          # SSE client + data types
-│   │       └── utils.ts        # cn() helper
-│   └── package.json
+├── dashboard/                  # Next.js 15 + React 19 + Tailwind CSS v4
+│   └── src/
+│       ├── app/                # Layout, page, dark-mode globals
+│       ├── components/         # ScanButton, LiveFeed, HealingHistory, CodeDiff, etc.
+│       └── lib/                # SSE client, data types, utilities
 │
-├── test_lab/                   # "Vulnerability Lab" — golden sample exploits
-│   ├── sql_lab.py              # SQL injection (3 variants)
-│   ├── secret_lab.js           # Hardcoded secrets (5 variants)
-│   └── logic_lab.py            # Broken auth & logic flaws (5 variants)
-│
-├── test_lab_golden/            # Pristine copies (auto-restored before each test)
-│
+├── test_lab/                   # Vulnerability Lab — 13 planted security flaws
+├── test_lab_golden/            # Pristine copies (auto-restored before tests)
 ├── scripts/
-│   └── run_integration_test.py # Full pipeline integration test + Readiness Report
+│   └── run_integration_test.py # Full pipeline test + Hackathon Readiness Report
 │
-├── .cursor/rules/
-│   └── sentinel-g3.mdc        # AI coding rules for the project
-│
-├── .env.template
-├── .gitignore
-├── requirements.txt
-└── README.md
+├── requirements.txt            # pip install -r requirements.txt
+├── .env.template               # Copy to .env, add GEMINI_API_KEY
+└── .gitignore                  # .env, *.bak.*, run_manifest.json excluded
 ```
-
----
-
-## Quick Start
-
-### Backend (FastAPI)
-
-```bash
-# 1. Clone & enter the project
-git clone <repo-url> && cd SentinelG3
-
-# 2. Create a virtual environment
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # macOS / Linux
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Configure environment
-copy .env.template .env       # then add your GEMINI_API_KEY
-
-# 5. Run the backend
-uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-
-### Dashboard (Next.js)
-
-```bash
-cd dashboard
-npm install
-npm run dev
-```
-
-Open **http://localhost:3000** — enter your target directory and hit **Run Security Scan**.
-
-### Integration Test
-
-```bash
-py scripts/run_integration_test.py
-```
-
-Runs the full Auditor → Fixer pipeline against `test_lab/` and prints a **Hackathon Readiness Report** with:
-
-- File mutation checks (did the code actually change?)
-- Backup integrity (`.bak` files for every patched file)
-- Manifest validation (`run_manifest.json` with thought signatures)
-- **Reasoning Quality Scorecard** — CoT Density, Signature Integrity, Heal Efficiency
-
----
-
-## Key Features
-
-### Gemini 3 Pro — Deep Reasoning
-
-Every Gemini call uses `thinking_level=HIGH`, enabling the model to reason through complex vulnerability chains rather than pattern-matching. The full chain-of-thought is:
-
-- **Captured** in `run_manifest.json` with cryptographic `thought_signature` blobs
-- **Displayed** in the dashboard as expandable "Auditor Reasoning" and "Fixer Reasoning" panels
-
-### Real-Time Dashboard
-
-The Next.js dashboard connects to the backend via **Server-Sent Events (SSE)** for live streaming:
-
-- **Live Feed** — terminal-style log output as the orchestrator runs
-- **Healing History** — expandable table with severity badges, chain-of-thought, and Shiki-highlighted code diffs
-- **Thinking Animation** — pulsing progress bars while the AI reasons
-- **Dark "War Room" Aesthetic** — emerald (healed), amber (threats), red (critical)
-
-### Vulnerability Lab
-
-The `test_lab/` directory contains 13 deliberately planted vulnerabilities across 3 files:
-
-| File | Type | Count | Tests |
-|---|---|---|---|
-| `sql_lab.py` | SQL Injection | 3 | f-string, concatenation, `.format()` |
-| `secret_lab.js` | Hardcoded Secrets | 5 | API keys, DB passwords, JWT, AWS creds |
-| `logic_lab.py` | Broken Auth | 5 | Logic flaws, timing attacks, session fixation |
-
-### Integration Test Suite
-
-`scripts/run_integration_test.py` provides automated validation:
-
-- **Phase 1** — Pre-flight cleanup (restore golden copies)
-- **Phase 2** — Execute the full orchestrator cycle
-- **Phase 3** — Post-flight verification (mutations, backups, manifest, reasoning quality)
-- **Phase 4** — Hackathon Readiness Report with ASCII art verdict
-
----
-
-## Tech Stack
-
-| Component | Technology |
-|---|---|
-| LLM | Google Gemini 3 Pro Preview (`google-genai` SDK, `thinking_level=HIGH`) |
-| Backend | FastAPI + Uvicorn, SSE streaming |
-| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS v4 |
-| Syntax Highlighting | Shiki (github-dark-default theme) |
-| UI Components | Shadcn/UI patterns, Lucide icons |
-| Validation | Pydantic v2 |
-| Config | python-dotenv |
 
 ---
 
@@ -262,9 +271,21 @@ The `test_lab/` directory contains 13 deliberately planted vulnerabilities acros
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/scan` | Start a scan (SSE stream of log/vuln/patch/summary events) |
+| `POST` | `/api/v1/scan` | Start a scan — returns SSE stream (`log`, `vuln`, `patch`, `summary` events) |
 | `GET` | `/api/v1/history` | Retrieve the latest `run_manifest.json` |
 | `GET` | `/health` | Service health check |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **LLM** | Google Gemini 3 Pro Preview via [`google-genai`](https://pypi.org/project/google-genai/) SDK — `thinking_level=HIGH`, `response_schema`, `thought_signature` |
+| **Backend** | Python 3.12+, FastAPI, Uvicorn, Server-Sent Events |
+| **Frontend** | Next.js 15, React 19, TypeScript, Tailwind CSS v4, Shiki syntax highlighting |
+| **UI** | Shadcn/UI patterns, Lucide icons, custom dark-mode war-room theme |
+| **Data** | Pydantic v2 for all agent I/O, JSON manifest for audit trail |
 
 ---
 
