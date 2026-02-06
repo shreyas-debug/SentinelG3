@@ -267,15 +267,3 @@ The `test_lab/` directory contains 13 deliberately planted vulnerabilities acros
 | `GET` | `/health` | Service health check |
 
 ---
-
-## Hackathon
-
-**Gemini 3 Hackathon** — *Build what's next*
-- Deadline: **Feb 9, 2026 @ 5:00 PM PST**
-- [gemini3.devpost.com](https://gemini3.devpost.com/)
-
----
-
-## License
-
-MIT
