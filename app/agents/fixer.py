@@ -14,6 +14,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from google.genai import types
@@ -68,12 +69,15 @@ class FixerAgent(BaseAgent):
         self,
         vulnerability: Vulnerability,
         original_code: str,
+        on_thinking: Callable[[str], Awaitable[None]] | None = None,
     ) -> PatchResult:
         """Ask Gemini 3 Pro to produce a fixed version of the source file.
 
         Args:
             vulnerability: The finding from the Auditor agent.
             original_code: The full source text of the vulnerable file.
+            on_thinking:  Optional async callback invoked with each thinking
+                          chunk as Gemini streams its reasoning.
 
         Returns:
             A ``PatchResult`` containing the fixed code (or an error message).
@@ -92,23 +96,48 @@ class FixerAgent(BaseAgent):
             f"```\n{original_code}\n```"
         )
 
+        return await self._generate_with_fallback(
+            vulnerability, original_code, prompt, on_thinking,
+        )
+
+    async def _generate_with_fallback(
+        self,
+        vulnerability: Vulnerability,
+        original_code: str,
+        prompt: str,
+        on_thinking: Callable[[str], Awaitable[None]] | None = None,
+    ) -> PatchResult:
+        """Try primary model, fall back on quota exhaustion.
+
+        When *on_thinking* is provided, uses the **streaming** API so
+        Gemini's chain-of-thought can be emitted to the dashboard in
+        real-time.
+        """
         last_exc: Exception | None = None
+        config = types.GenerateContentConfig(
+            system_instruction=_SYSTEM_INSTRUCTION,
+            thinking_config=types.ThinkingConfig(
+                thinking_level="HIGH",
+                include_thoughts=True,
+            ),
+        )
 
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                response = await self.client.aio.models.generate_content(
-                    model="gemini-3-pro-preview",
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=_SYSTEM_INSTRUCTION,
-                        thinking_config=types.ThinkingConfig(
-                            thinking_level="HIGH",
-                        ),
-                    ),
-                )
-                self.last_response = response
+                if on_thinking:
+                    raw_text = await self._stream_with_thinking(
+                        prompt, config, on_thinking,
+                    )
+                else:
+                    response = await self.client.aio.models.generate_content(
+                        model=self.active_model,
+                        contents=prompt,
+                        config=config,
+                    )
+                    self.last_response = response
+                    raw_text = response.text or ""
 
-                fixed_code = self._extract_code(response.text or "")
+                fixed_code = self._extract_code(raw_text)
 
                 if not fixed_code.strip():
                     logger.warning(
@@ -124,10 +153,11 @@ class FixerAgent(BaseAgent):
                     )
 
                 logger.info(
-                    "Patch generated for %s (line %d, %s)",
+                    "Patch generated for %s (line %d, %s) [model=%s]",
                     vulnerability.file_path,
                     vulnerability.line_number,
                     vulnerability.severity,
+                    self.active_model,
                 )
 
                 return PatchResult(
@@ -135,7 +165,7 @@ class FixerAgent(BaseAgent):
                     original_code=original_code,
                     fixed_code=fixed_code,
                     success=True,
-                    message="Patch generated successfully.",
+                    message=f"Patch generated successfully (model={self.active_model}).",
                 )
 
             except ClientError as exc:
@@ -155,9 +185,10 @@ class FixerAgent(BaseAgent):
                 last_exc = exc
                 delay = _BASE_DELAY * (2 ** (attempt - 1))
                 logger.warning(
-                    "429 rate-limited for %s (attempt %d/%d). "
+                    "429 rate-limited for %s (attempt %d/%d, model=%s). "
                     "Retrying in %.1f s …",
-                    vulnerability.file_path, attempt, _MAX_RETRIES, delay,
+                    vulnerability.file_path, attempt, _MAX_RETRIES,
+                    self.active_model, delay,
                 )
                 await asyncio.sleep(delay)
 
@@ -174,9 +205,18 @@ class FixerAgent(BaseAgent):
                     message=f"Unexpected error: {exc}",
                 )
 
-        # All retries exhausted
+        # All retries exhausted — try fallback model if available
+        if self.switch_to_fallback():
+            logger.info(
+                "Retrying %s with fallback model %s …",
+                vulnerability.file_path, self.active_model,
+            )
+            return await self._generate_with_fallback(
+                vulnerability, original_code, prompt, on_thinking,
+            )
+
         logger.error(
-            "All %d retries exhausted for %s: %s",
+            "All retries exhausted for %s: %s",
             _MAX_RETRIES, vulnerability.file_path, last_exc,
         )
         return PatchResult(
@@ -184,8 +224,45 @@ class FixerAgent(BaseAgent):
             original_code=original_code,
             fixed_code="",
             success=False,
-            message=f"Rate-limited after {_MAX_RETRIES} retries.",
+            message=f"Rate-limited after {_MAX_RETRIES} retries on both models.",
         )
+
+    # ── Streaming helper ────────────────────────────────────
+
+    async def _stream_with_thinking(
+        self,
+        prompt: str,
+        config: types.GenerateContentConfig,
+        on_thinking: Callable[[str], Awaitable[None]],
+    ) -> str:
+        """Call Gemini with the streaming API, emitting thinking chunks.
+
+        Returns the concatenated non-thinking response text.
+        """
+        text_parts: list[str] = []
+
+        stream = await self.client.aio.models.generate_content_stream(
+            model=self.active_model,
+            contents=prompt,
+            config=config,
+        )
+        async for chunk in stream:
+            if not chunk.candidates:
+                continue
+            for candidate in chunk.candidates:
+                if not candidate.content or not candidate.content.parts:
+                    continue
+                for part in candidate.content.parts:
+                    is_thought = getattr(part, "thought", False)
+                    text = getattr(part, "text", "") or ""
+                    if not text:
+                        continue
+                    if is_thought:
+                        await on_thinking(text)
+                    else:
+                        text_parts.append(text)
+
+        return "".join(text_parts)
 
     # ── Core: apply a patch to disk ─────────────────────────
 

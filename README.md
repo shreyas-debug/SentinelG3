@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Gemini_3_Pro-thinking__level%3DHIGH-4285F4?style=for-the-badge&logo=google&logoColor=white" alt="Gemini 3 Pro" />
+  <img src="https://img.shields.io/badge/Gemini_3-thinking__level%3DHIGH-4285F4?style=for-the-badge&logo=google&logoColor=white" alt="Gemini 3" />
   <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
   <img src="https://img.shields.io/badge/Next.js_15-000000?style=for-the-badge&logo=next.js&logoColor=white" alt="Next.js" />
   <img src="https://img.shields.io/badge/Python_3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
@@ -12,7 +12,7 @@
   and <b>proves</b> every decision with a cryptographically signed chain of thought.</em>
 </p>
 <p align="center">
-  Built for the <a href="https://gemini3.devpost.com/">Gemini 3 Hackathon</a> &middot; Powered by <a href="https://deepmind.google/technologies/gemini/">Google Gemini 3 Pro</a> + <code>google-genai</code> SDK
+  Built for the <a href="https://gemini3.devpost.com/">Gemini 3 Hackathon</a> &middot; Powered by <a href="https://deepmind.google/technologies/gemini/">Google Gemini 3</a> (Flash/Pro) + <code>google-genai</code> SDK
 </p>
 
 ---
@@ -32,11 +32,29 @@ The full chain-of-thought from both agents is captured with Gemini 3's `thought_
 
 ---
 
+## 🎯 Gemini 3 Integration
+
+Sentinel-G3 is **fundamentally built around Gemini 3's advanced reasoning capabilities**, making it impossible to replicate with traditional LLMs or static analysis tools. The integration leverages five core Gemini 3 features that are central to the application's autonomous security auditing and self-healing workflow.
+
+**1. High-Level Reasoning (`thinking_level="HIGH"`)** — Both the Auditor and Fixer agents use `ThinkingConfig(thinking_level="HIGH")` to enable deep, multi-step reasoning. This allows the Auditor to understand context-dependent vulnerabilities (like logic flaws, privilege escalation) that require genuine comprehension, not pattern matching. The Fixer uses the same deep reasoning to generate contextually appropriate patches that preserve functionality while eliminating security risks.
+
+**2. Chain-of-Thought Streaming (`include_thoughts=True` + `generate_content_stream`)** — The Fixer agent uses Gemini's streaming API with `include_thoughts=True` to emit thinking chunks in real-time. This enables the dashboard to display the agent's reasoning process **live** as it generates fixes, creating transparency and trust. Users see exactly how the AI analyzes the vulnerability, considers attack vectors, and selects the remediation strategy—all streamed via Server-Sent Events to the frontend.
+
+**3. Cryptographic Thought Signatures (`thought_signature`)** — Every reasoning step from both agents includes a `thought_signature`—a cryptographic proof that the reasoning actually occurred inside the model. These signatures are extracted, base64-encoded, and stored in `run_manifest.json`, providing an immutable audit trail. This feature is **central** to Sentinel-G3's "proof of reasoning" value proposition, enabling verification that fixes weren't fabricated post-hoc.
+
+**4. Structured Output (`response_schema`)** — The Auditor uses `response_schema=list[Vulnerability]` with `response_mime_type="application/json"` to receive perfectly typed Pydantic models directly from Gemini. This eliminates parsing errors, ensures type safety, and enables the orchestrator to process findings without manual JSON validation.
+
+**5. Model Fallback & Async Operations** — The system uses `google-genai`'s async client (`client.aio.models`) for non-blocking operations and implements intelligent fallback from `gemini-3-flash-preview` to `gemini-3-pro-preview` on quota exhaustion, ensuring reliability under high demand.
+
+Without Gemini 3's reasoning depth, streaming thoughts, and cryptographic signatures, Sentinel-G3 would be just another vulnerability scanner. These features enable the **autonomous, verifiable, transparent** security remediation that defines the project.
+
+---
+
 ## Why Sentinel-G3?
 
 Most security scanners hand you a list of problems and walk away. Sentinel-G3 **closes the loop**:
 
-1. **Finds** vulnerabilities using Gemini 3 Pro with `thinking_level=HIGH` — deep reasoning, not regex
+1. **Finds** vulnerabilities using Gemini 3 with `thinking_level=HIGH` — deep reasoning, not regex
 2. **Fixes** them autonomously — generating syntax-safe patches with backup safety nets
 3. **Proves** every decision — signed audit trail with full chain-of-thought transparency
 
@@ -55,8 +73,8 @@ flowchart LR
         V["✅ Validator<br/>Verify fix integrity"]
     end
 
-    subgraph Gemini["Google Gemini 3 Pro"]
-        G["generate_content()<br/>+ ThinkingConfig<br/>+ response_schema"]
+    subgraph Gemini["Google Gemini 3"]
+        G["generate_content()<br/>+ ThinkingConfig<br/>+ response_schema<br/>+ Streaming API"]
     end
 
     subgraph Output["Audit Trail"]
@@ -80,32 +98,42 @@ flowchart LR
     style D fill:#1e293b,stroke:#475569,color:#e2e8f0
 ```
 
-### How the Agents Use Gemini 3 Pro
+### How the Agents Use Gemini 3
 
 **Auditor Agent** (`app/agents/auditor.py`)
 ```python
 response = await client.aio.models.generate_content(
-    model="gemini-3-pro-preview",
+    model=self.active_model,  # gemini-3-flash-preview (primary) or gemini-3-pro-preview (fallback)
     contents=prompt,
     config=types.GenerateContentConfig(
         system_instruction="You are an elite security researcher...",
-        thinking_config=types.ThinkingConfig(thinking_level="HIGH"),
+        thinking_config=types.ThinkingConfig(
+            thinking_level="HIGH",
+            include_thoughts=True,  # Capture chain-of-thought
+        ),
         response_mime_type="application/json",
         response_schema=list[Vulnerability],  # Structured output
     ),
 )
 ```
 
-**Fixer Agent** (`app/agents/fixer.py`)
+**Fixer Agent** (`app/agents/fixer.py`) — with real-time streaming
 ```python
-response = await client.aio.models.generate_content(
-    model="gemini-3-pro-preview",
+# Uses streaming API for live chain-of-thought
+stream = await client.aio.models.generate_content_stream(
+    model=self.active_model,
     contents=prompt,
     config=types.GenerateContentConfig(
         system_instruction="You are a Senior Security Engineer...",
-        thinking_config=types.ThinkingConfig(thinking_level="HIGH"),
+        thinking_config=types.ThinkingConfig(
+            thinking_level="HIGH",
+            include_thoughts=True,  # Stream thinking chunks
+        ),
     ),
 )
+async for chunk in stream:
+    if chunk.part.thought:
+        await on_thinking(chunk.part.text)  # Emit to dashboard in real-time
 ```
 
 **Orchestrator** (`app/orchestrator.py`) — captures the thought signatures:
@@ -176,7 +204,11 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:3000**, enter a target directory (e.g. `test_lab/`), and hit **Run Security Scan**.
+Open **http://localhost:3000**. You can scan either:
+- **Local directory**: Enter a path (e.g. `test_lab/`)
+- **GitHub repository**: Paste a repo URL (e.g. `https://github.com/user/repo`) and optionally provide a GitHub token to create a Pull Request with fixes
+
+Then hit **Run Security Scan**.
 
 ### 5. Run the Integration Test
 
@@ -281,11 +313,42 @@ SentinelG3/
 
 | Layer | Technology |
 |---|---|
-| **LLM** | Google Gemini 3 Pro Preview via [`google-genai`](https://pypi.org/project/google-genai/) SDK — `thinking_level=HIGH`, `response_schema`, `thought_signature` |
+| **LLM** | Google Gemini 3 Flash/Pro via [`google-genai`](https://pypi.org/project/google-genai/) SDK — `thinking_level=HIGH`, `include_thoughts=True`, `response_schema`, `thought_signature`, streaming API |
 | **Backend** | Python 3.12+, FastAPI, Uvicorn, Server-Sent Events |
 | **Frontend** | Next.js 15, React 19, TypeScript, Tailwind CSS v4, Shiki syntax highlighting |
 | **UI** | Shadcn/UI patterns, Lucide icons, custom dark-mode war-room theme |
 | **Data** | Pydantic v2 for all agent I/O, JSON manifest for audit trail |
+
+---
+
+## 🏆 Hackathon Submission
+
+### Public Repository
+**GitHub:** [https://github.com/shreyas-debug/SentinelG3](https://github.com/shreyas-debug/SentinelG3)
+
+The repository is **public** and contains the complete source code, including:
+- FastAPI backend with Auditor and Fixer agents
+- Next.js 15 dashboard with real-time streaming UI
+- Vulnerability Lab (`test_lab/`) with 13 planted vulnerabilities
+- Integration test suite with Hackathon Readiness Report
+- Full documentation and setup instructions
+
+### Public Project Access
+
+**Local Setup Required:** Sentinel-G3 requires a local installation to run (backend + frontend). To experience the project:
+
+1. **Clone the repository** (see [Getting Started](#getting-started) above)
+2. **Get a free Gemini API key** from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+3. **Follow the setup instructions** to run the backend and dashboard locally
+
+### Key Features Demonstrated
+
+- ✅ **Autonomous Security Auditing** — Finds vulnerabilities using deep reasoning
+- ✅ **Self-Healing** — Generates and applies security patches automatically
+- ✅ **Real-Time Chain-of-Thought** — Streams AI reasoning live to the dashboard
+- ✅ **Cryptographic Proof** — Thought signatures provide verifiable audit trail
+- ✅ **GitHub Integration** — Can scan GitHub repositories, apply patches, and automatically create Pull Requests with fixes
+- ✅ **Transparent Decision-Making** — Every fix includes full reasoning and code diffs
 
 ---
 

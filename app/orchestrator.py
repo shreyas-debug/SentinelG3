@@ -244,17 +244,35 @@ class SentinelOrchestrator:
         Returned **untruncated** so the dashboard can display the full CoT.
         """
         if not response or not response.candidates:
+            logger.debug("extract_full_thinking: no response or no candidates")
             return ""
 
         parts: list[str] = []
+        total_parts = 0
+
         for candidate in response.candidates:
             if not candidate.content or not candidate.content.parts:
                 continue
             for part in candidate.content.parts:
-                if part.thought and part.text:
-                    parts.append(part.text)
+                total_parts += 1
+                is_thought = getattr(part, "thought", False)
+                text = getattr(part, "text", "") or ""
+                logger.debug(
+                    "  part: thought=%r, text_len=%d, has_signature=%r",
+                    is_thought,
+                    len(text),
+                    bool(getattr(part, "thought_signature", None)),
+                )
+                if is_thought and text:
+                    parts.append(text)
 
-        return "\n".join(parts)
+        result = "\n".join(parts)
+        logger.info(
+            "extract_full_thinking: %d thinking parts found out of %d total parts "
+            "(result length: %d chars)",
+            len(parts), total_parts, len(result),
+        )
+        return result
 
     # ── Manifest helpers ────────────────────────────────────
 

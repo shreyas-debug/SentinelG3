@@ -22,6 +22,8 @@ export interface HealingEntry {
   healed: boolean;
   auditor_thought?: string;
   fixer_thought?: string;
+  /** Which Gemini model produced the reasoning (e.g. "gemini-3-flash-preview"). */
+  model_used?: string;
   /** @deprecated Use auditor_thought / fixer_thought */
   thought_text?: string;
 }
@@ -35,28 +37,76 @@ export interface HealingSummary {
   entries: HealingEntry[];
 }
 
+export interface PRResult {
+  url: string;
+  number: number;
+  branch: string;
+}
+
+export interface ThinkingChunk {
+  text: string;
+  index: number;
+  file: string;
+}
+
 export type SSEEvent =
   | { type: "log"; data: { message: string } }
   | { type: "vuln"; data: Vulnerability }
+  | { type: "thinking"; data: ThinkingChunk }
   | { type: "patch"; data: HealingEntry }
   | { type: "summary"; data: HealingSummary }
+  | { type: "pr"; data: PRResult }
   | { type: "error"; data: { message: string } };
 
 /**
+ * Detect whether a target string looks like a remote Git URL.
+ */
+export function isRepoUrl(target: string): boolean {
+  const t = target.trim();
+  return (
+    t.startsWith("https://github.com/") ||
+    t.startsWith("https://gitlab.com/") ||
+    t.startsWith("https://bitbucket.org/") ||
+    t.startsWith("github.com/") ||
+    t.startsWith("gitlab.com/") ||
+    t.startsWith("bitbucket.org/")
+  );
+}
+
+export interface ScanOptions {
+  /** GitHub PAT for pushing branches / creating PRs. */
+  githubToken?: string;
+  /** Whether to create a PR with the fixes. */
+  createPr?: boolean;
+}
+
+/**
  * Start a scan via SSE. Calls `onEvent` for each server-sent event.
+ * Accepts either a local directory path or a remote Git URL.
  * Returns an AbortController so the caller can cancel.
  */
 export function startScan(
-  directory: string,
+  target: string,
   onEvent: (event: SSEEvent) => void,
   onDone: () => void,
+  options?: ScanOptions,
 ): AbortController {
   const controller = new AbortController();
+
+  const isRemote = isRepoUrl(target);
+  const body: Record<string, unknown> = isRemote
+    ? { repo_url: target }
+    : { directory: target };
+
+  if (isRemote && options?.githubToken) {
+    body.github_token = options.githubToken;
+    body.create_pr = options.createPr ?? false;
+  }
 
   fetch(`${API_BASE}/scan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ directory }),
+    body: JSON.stringify(body),
     signal: controller.signal,
   })
     .then(async (res) => {

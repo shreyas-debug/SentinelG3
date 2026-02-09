@@ -1,5 +1,16 @@
 import sqlite3
-# A clear SQL injection vulnerability
+import os
+import logging
+
 def get_user(name):
-    conn = sqlite3.connect('users.db')
-    return conn.execute(f"SELECT * FROM users WHERE name = '{name}'")
+    db_path = os.environ.get('DATABASE_PATH', '/var/lib/myapp/users.db')
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        return conn.execute("SELECT id, name FROM users WHERE name = ? LIMIT 1000", (name,)).fetchall()
+    except (sqlite3.Error, Exception) as e:
+        logging.error("Database connection or query failed: %s", e)
+        return []
+    finally:
+        if conn:
+            conn.close()

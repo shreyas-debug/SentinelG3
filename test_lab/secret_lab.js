@@ -11,19 +11,19 @@ const axios = require("axios");
 const app = express();
 
 // ── Vulnerability 1: Hardcoded API key ──────────────────────
-const API_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqrstu678";
+const API_KEY = process.env.API_KEY;
 
 // ── Vulnerability 2: Hardcoded database credentials ─────────
 const DB_CONFIG = {
-  host: "production-db.internal.company.com",
-  port: 5432,
-  user: "admin",
-  password: "SuperSecret_Passw0rd!2025",
-  database: "customers",
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT || 5432,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
 };
 
 // ── Vulnerability 3: JWT secret in source code ──────────────
-const JWT_SECRET = "my-ultra-secret-jwt-signing-key-do-not-share";
+const JWT_SECRET = process.env.JWT_SECRET;
 
 function signToken(userId) {
   const jwt = require("jsonwebtoken");
@@ -31,27 +31,24 @@ function signToken(userId) {
 }
 
 // ── Vulnerability 4: AWS credentials exposed ────────────────
-const AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
-const AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+// Managed via IAM Roles or Environment Variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+// The AWS SDK automatically loads these from the environment or instance metadata.
 
 async function uploadToS3(file) {
-  // Uses hardcoded credentials instead of IAM roles or env vars
   const AWS = require("aws-sdk");
   const s3 = new AWS.S3({
-    accessKeyId: AWS_ACCESS_KEY_ID,
-    secretAccessKey: AWS_SECRET_ACCESS_KEY,
-    region: "us-east-1",
+    region: process.env.AWS_REGION || "us-east-1",
   });
-  return s3.upload({ Bucket: "my-bucket", Key: file.name, Body: file.data }).promise();
+  return s3.upload({ Bucket: process.env.AWS_S3_BUCKET, Key: file.name, Body: file.data }).promise();
 }
 
 // ── Vulnerability 5: Sending secrets in HTTP headers ────────
 app.get("/api/data", async (req, res) => {
   try {
-    const response = await axios.get("https://api.external-service.com/v1/data", {
+    const response = await axios.get(process.env.EXTERNAL_SERVICE_URL, {
       headers: {
         Authorization: "Bearer " + API_KEY,
-        "X-Custom-Token": "hardcoded-token-value-12345",
+        "X-Custom-Token": process.env.CUSTOM_TOKEN,
       },
     });
     res.json(response.data);
@@ -60,4 +57,5 @@ app.get("/api/data", async (req, res) => {
   }
 });
 
-app.listen(3001, () => console.log("Server running on :3001"));
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => console.log(`Server running on :${PORT}`));

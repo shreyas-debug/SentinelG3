@@ -24,7 +24,10 @@ class Settings:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "info")
 
     # Gemini model identifiers (update when new models land)
-    GEMINI_MODEL: str = "gemini-3-pro-preview"
+    # Primary model — Flash first (higher free-tier quota, faster)
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+    # Fallback model — Pro for deeper reasoning if Flash quota exhausted
+    GEMINI_FALLBACK_MODEL: str = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3-pro-preview")
 
     @classmethod
     def validate(cls) -> None:

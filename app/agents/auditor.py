@@ -55,6 +55,17 @@ Return ONLY a valid JSON array of objects. If the file is clean, return [].
 class AuditorAgent(BaseAgent):
     """Stage 1 – Identify security vulnerabilities in the target codebase."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        # Accumulate thinking text from every file scanned so the dashboard
+        # can show the full chain-of-thought, not just the last file.
+        self._accumulated_thinking: list[str] = []
+
+    @property
+    def accumulated_thinking(self) -> str:
+        """Return the concatenated thinking from all audited files."""
+        return "\n\n".join(t for t in self._accumulated_thinking if t)
+
     # ── Pipeline entry-point ────────────────────────────────
 
     async def run(self, context: dict[str, Any]) -> dict[str, Any]:
@@ -126,10 +137,11 @@ class AuditorAgent(BaseAgent):
         rel_path: str,
         content: str,
     ) -> list[Vulnerability]:
-        """Send one source file to Gemini 3 Pro and return findings.
+        """Send one source file to Gemini and return findings.
 
         Retries up to ``_MAX_RETRIES`` times on ``ResourceExhausted`` (429)
-        with exponential back-off (2 s → 4 s → 8 s).
+        with exponential back-off (2 s → 4 s → 8 s).  If all retries fail
+        and a fallback model is configured, switches to it and retries once.
         """
         numbered = "\n".join(
             f"{i}: {line}"
@@ -141,23 +153,37 @@ class AuditorAgent(BaseAgent):
             "Analyse this file for security vulnerabilities."
         )
 
+        result = await self._call_with_fallback(rel_path, prompt)
+        return result
+
+    async def _call_with_fallback(
+        self,
+        rel_path: str,
+        prompt: str,
+    ) -> list[Vulnerability]:
+        """Try primary model, fall back on quota exhaustion."""
         last_exc: Exception | None = None
 
         for attempt in range(1, self._MAX_RETRIES + 1):
             try:
                 response = await self.client.aio.models.generate_content(
-                    model="gemini-3-pro-preview",
+                    model=self.active_model,
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         system_instruction=_SYSTEM_INSTRUCTION,
                         thinking_config=types.ThinkingConfig(
                             thinking_level="HIGH",
+                            include_thoughts=True,
                         ),
                         response_mime_type="application/json",
                         response_schema=list[Vulnerability],
                     ),
                 )
                 self.last_response = response
+
+                # Accumulate thinking from this file's response
+                self._accumulate_thinking(response, rel_path)
+
                 return self._parse_response(response, rel_path)
 
             except ClientError as exc:
@@ -168,9 +194,10 @@ class AuditorAgent(BaseAgent):
                 last_exc = exc
                 delay = self._BASE_DELAY * (2 ** (attempt - 1))  # 2, 4, 8
                 logger.warning(
-                    "429 rate-limited on %s (attempt %d/%d). "
+                    "429 rate-limited on %s (attempt %d/%d, model=%s). "
                     "Retrying in %.1f s …",
-                    rel_path, attempt, self._MAX_RETRIES, delay,
+                    rel_path, attempt, self._MAX_RETRIES,
+                    self.active_model, delay,
                 )
                 await asyncio.sleep(delay)
 
@@ -178,12 +205,47 @@ class AuditorAgent(BaseAgent):
                 logger.error("Gemini call failed for %s: %s", rel_path, exc)
                 return []
 
-        # All retries exhausted
+        # All retries exhausted — try fallback model if available
+        if self.switch_to_fallback():
+            logger.info(
+                "Retrying %s with fallback model %s …",
+                rel_path, self.active_model,
+            )
+            return await self._call_with_fallback(rel_path, prompt)
+
         logger.error(
-            "All %d retries exhausted for %s: %s",
-            self._MAX_RETRIES, rel_path, last_exc,
+            "All retries exhausted for %s: %s",
+            rel_path, last_exc,
         )
         return []
+
+    # ── Private: accumulate thinking ─────────────────────────
+
+    def _accumulate_thinking(self, response: Any, rel_path: str) -> None:
+        """Extract thinking parts from a response and append to the buffer."""
+        if not response or not getattr(response, "candidates", None):
+            return
+
+        parts: list[str] = []
+        for candidate in response.candidates:
+            if not candidate.content or not candidate.content.parts:
+                continue
+            for part in candidate.content.parts:
+                is_thought = getattr(part, "thought", False)
+                text = getattr(part, "text", "") or ""
+                if is_thought and text:
+                    parts.append(text)
+
+        if parts:
+            header = f"── {rel_path} ──"
+            self._accumulated_thinking.append(f"{header}\n" + "\n".join(parts))
+            logger.info(
+                "Accumulated %d thinking part(s) from %s (%d chars)",
+                len(parts), rel_path,
+                sum(len(p) for p in parts),
+            )
+        else:
+            logger.debug("No thinking parts found in response for %s", rel_path)
 
     # ── Private: file collection ────────────────────────────
 
