@@ -238,3 +238,60 @@ body {
   border-bottom: 6px solid transparent;
   border-right: 6px solid var(--color-bg-card);
 }
+
+/* ── Print / PDF Export ──────────────────────── */
+@media print {
+  /* Force light background for readability */
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    font-size: 11pt;
+  }
+
+  /* Hide interactive elements */
+  header,
+  .print\:hidden,
+  button,
+  input,
+  label {
+    display: none !important;
+  }
+
+  /* Remove backgrounds and borders for print */
+  main {
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+
+  /* Keep cards usable */
+  [class*="rounded-xl"],
+  [class*="rounded-lg"] {
+    border: 1px solid #cbd5e1 !important;
+    background: #f8fafc !important;
+    break-inside: avoid;
+  }
+
+  /* Severity badges: keep their text visible */
+  [class*="Badge"] {
+    border: 1px solid currentColor;
+    background: transparent !important;
+  }
+
+  /* Expand all details panels for the report */
+  details { display: block; }
+  details summary { display: none; }
+
+  /* Don't print the live feed / animations */
+  [data-live-feed] { display: none !important; }
+
+  /* Page breaks between findings */
+  .border-b.border-\[var\(--color-border\)\] {
+    break-inside: avoid;
+  }
+
+  /* Footer */
+  @page {
+    margin: 15mm 20mm;
+  }
+}
+

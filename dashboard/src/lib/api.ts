@@ -6,6 +6,12 @@ export interface Vulnerability {
   file_path: string;
   line_number: number;
   fix_suggestion: string;
+  /** Plain-English explanation for non-technical audiences. */
+  eli5_explanation?: string;
+  /** Concrete proof-of-concept exploit command / payload. */
+  exploit_poc?: string;
+  /** Step-by-step attacker narrative. */
+  attack_scenario?: string;
 }
 
 export interface PatchResult {
@@ -78,6 +84,59 @@ export interface ScanOptions {
   githubToken?: string;
   /** Whether to create a PR with the fixes. */
   createPr?: boolean;
+  /**
+   * If false, patches are NOT applied automatically — the user must click
+   * "Approve Fix" in the dashboard to apply each one via POST /apply.
+   * Defaults to true for backwards compatibility.
+   */
+  autoApply?: boolean;
+}
+
+/**
+ * Apply a batch of pre-generated patches. (Incremental Healing mode)
+ * Handles both local directories and remote GitHub repos.
+ */
+export async function applyBatchPatches(
+  target: string,
+  patches: { file_path: string; new_content: string }[],
+  options?: { createPr?: boolean; githubToken?: string }
+): Promise<{ success: boolean; message: string; pr_url?: string }> {
+  const body = {
+    target,
+    patches,
+    create_pr: options?.createPr ?? false,
+    github_token: options?.githubToken ?? "",
+  };
+
+  const res = await fetch(`${API_BASE}/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+    return { success: false, message: err.detail ?? `HTTP ${res.status}` };
+  }
+  return res.json();
+}
+
+/**
+ * Generate a professional HTML security report from a completed scan summary.
+ * Posts data to the backend /report endpoint, gets back HTML, and returns a
+ * Blob URL that can be opened in a new browser tab.
+ */
+export async function generateReport(summary: HealingSummary): Promise<string> {
+  const res = await fetch(`${API_BASE}/report`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(summary),
+  });
+  if (!res.ok) {
+    throw new Error(`Report generation failed: HTTP ${res.status}`);
+  }
+  const html = await res.text();
+  const blob = new Blob([html], { type: "text/html" });
+  return URL.createObjectURL(blob);
 }
 
 /**
@@ -103,6 +162,9 @@ export function startScan(
     body.create_pr = options.createPr ?? false;
   }
 
+  // Always send auto_apply so the backend respects Incremental Healing mode
+  body.auto_apply = options?.autoApply ?? true;
+
   fetch(`${API_BASE}/scan`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -119,6 +181,7 @@ export function startScan(
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let currentEvent = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -129,7 +192,7 @@ export function startScan(
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
 
-        let currentEvent = "";
+
         for (const line of lines) {
           if (line.startsWith("event: ")) {
             currentEvent = line.slice(7).trim();

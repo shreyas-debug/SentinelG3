@@ -1,8 +1,8 @@
 """
 Sentinel-G3 | Auditor Agent
 
-Scans .py and .js source files for security vulnerabilities using
-Gemini 3 Pro with thinking_level=HIGH via the google-genai AsyncClient.
+Scans Python, JavaScript, TypeScript, Go, Rust, Java, and Infrastructure-as-Code
+files for security vulnerabilities using Gemini 3 with thinking_level=HIGH.
 """
 
 from __future__ import annotations
@@ -22,13 +22,25 @@ from app.models.schemas import AuditResult, Vulnerability
 
 logger = logging.getLogger(__name__)
 
-# Extensions the auditor cares about
-_TARGET_EXTENSIONS: set[str] = {".py", ".js"}
+# Extensions the auditor cares about — covers Python, JS/TS, Go, Rust, Java,
+# and Infrastructure-as-Code (Terraform, Kubernetes YAML, Docker Compose, etc.)
+_TARGET_EXTENSIONS: set[str] = {
+    # Web / scripting
+    ".py", ".js", ".ts", ".tsx", ".jsx",
+    # Systems languages
+    ".go", ".rs", ".java",
+    # Infrastructure-as-Code
+    ".tf", ".yaml", ".yml", ".json",
+    # Shell
+    ".sh", ".bash",
+}
 
 # Directories to always skip
 _SKIP_DIRS: set[str] = {
     ".git", "node_modules", "__pycache__", ".venv", "venv",
     "env", ".tox", ".mypy_cache", "dist", "build",
+    "target",  # Rust / Java build output
+    ".terraform",  # Terraform cache
 }
 
 # Max file size to read (256 KB)
@@ -36,19 +48,43 @@ _MAX_FILE_BYTES: int = 256 * 1024
 
 _SYSTEM_INSTRUCTION: str = """\
 You are an elite security researcher performing a comprehensive code audit.
+You are fluent in all programming languages and security domains:
+- Python: SQL injection, command injection, insecure deserialization, SSRF
+- JavaScript/TypeScript: XSS, prototype pollution, CSRF, insecure JWT, Express.js middleware bypasses
+- Go: goroutine race conditions, unsafe pointer usage, path traversal
+- Rust: unsafe blocks, integer overflow, use-after-free
+- Java: deserialization, XXE injection, Spring misconfigurations
+- Terraform / Kubernetes YAML: open S3 buckets, permissive RBAC, exposed secrets, root containers
+- Shell scripts: command injection, unquoted variables
+
 Analyse the provided source file and identify ALL security vulnerabilities,
 including subtle logic flaws, injection vectors, authentication bypasses,
 cryptographic weaknesses, and misconfigurations.
 
-For each vulnerability return a JSON object with exactly these fields:
-  - severity       (str): critical | high | medium | low | info
-  - issue          (str): detailed technical description of the vulnerability,
-                          exploit scenario, and impact
-  - file_path      (str): the relative file path provided to you
-  - line_number    (int): exact line number of the vulnerability
-  - fix_suggestion (str): concise, actionable remediation
+For each vulnerability return a JSON object with EXACTLY these fields:
+  - severity          (str)  : critical | high | medium | low | info
+  - issue             (str)  : detailed technical description of the vulnerability,
+                               how it can be exploited, and the potential impact
+  - file_path         (str)  : the relative file path provided to you
+  - line_number       (int)  : exact line number of the vulnerability
+  - fix_suggestion    (str)  : concise, actionable remediation recommendation
+  - eli5_explanation  (str)  : a one-sentence, jargon-free analogy for a
+                               non-technical audience. Start with "This is like..."
+                               or directly describe the risk in plain English.
+                               Example: "An attacker can trick your database into
+                               revealing all user passwords by typing a special
+                               phrase into any login form."
+  - exploit_poc       (str)  : a concrete proof-of-concept showing how an attacker
+                               would trigger this vulnerability. Use realistic
+                               examples: curl commands, SQL payloads, script
+                               snippets, or malicious YAML/Terraform configs.
+                               Example: "curl -X POST /login -d \"username=' OR 1=1--&password=x\""
+  - attack_scenario   (str)  : a 2-4 sentence narrative describing: (1) who the
+                               attacker is, (2) what they do step-by-step, and
+                               (3) what data/system they gain access to.
 
-Return ONLY a valid JSON array of objects. If the file is clean, return [].
+Return ONLY a valid JSON array of objects matching the schema above.
+If the file is clean, return [].
 """
 
 

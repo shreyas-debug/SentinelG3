@@ -52,6 +52,27 @@ class Vulnerability(BaseModel):
     fix_suggestion: str = Field(
         description="Concise, actionable remediation recommendation.",
     )
+    eli5_explanation: str = Field(
+        default="",
+        description=(
+            "A simple analogy explaining this vulnerability for a non-technical audience. "
+            "Example: 'An attacker can trick your database into revealing all passwords.'"
+        ),
+    )
+    exploit_poc: str = Field(
+        default="",
+        description=(
+            "A concrete proof-of-concept exploit string or command demonstrating how this "
+            "vulnerability can be triggered. Example: curl command, SQL payload, script snippet."
+        ),
+    )
+    attack_scenario: str = Field(
+        default="",
+        description=(
+            "Step-by-step narrative of how a real attacker would exploit this vulnerability, "
+            "including the goal, method, and potential impact."
+        ),
+    )
 
 
 class AuditResult(BaseModel):

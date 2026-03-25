@@ -190,8 +190,14 @@ GEMINI_API_KEY=your-key-from-aistudio
 
 ### 3. Start the Backend
 
+Make sure your virtual environment is still activated. If your terminal doesn't recognize `uvicorn`, use the full path to the Python executable in the virtual environment:
+
 ```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+# Windows
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+
+# macOS / Linux
+./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 The API will be live at **http://127.0.0.1:8000** (interactive docs at `/docs`).

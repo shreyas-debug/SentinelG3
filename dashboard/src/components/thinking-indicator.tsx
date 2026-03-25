@@ -63,7 +63,7 @@ export function ThinkingIndicator({
   vulnerableCode?: string;
   filePath?: string;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
