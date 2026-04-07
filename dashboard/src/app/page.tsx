@@ -102,43 +102,55 @@ function SettingsPanel({
             </button>
           </div>
 
-          {/* Mode Toggle */}
+          {/* Mode Toggle - Only show Local mode in development */}
           <div>
             <label className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2 block">
               Scan Target
             </label>
-            <div className="flex gap-2" role="radiogroup" aria-label="Scan target type">
-              <button
-                onClick={() => setScanMode("github")}
-                disabled={scanning}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold transition-all ${
-                  scanMode === "github"
-                    ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40"
-                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border-2 border-[var(--color-border)]"
-                }`}
-                role="radio"
-                aria-checked={scanMode === "github"}
-                aria-label="Scan GitHub repository"
-              >
-                <Github className="h-4 w-4" aria-hidden="true" />
-                GitHub Repo
-              </button>
-              <button
-                onClick={() => setScanMode("local")}
-                disabled={scanning}
-                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold transition-all ${
-                  scanMode === "local"
-                    ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40"
-                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border-2 border-[var(--color-border)]"
-                }`}
-                role="radio"
-                aria-checked={scanMode === "local"}
-                aria-label="Scan local directory"
-              >
-                <FolderOpen className="h-4 w-4" aria-hidden="true" />
-                Local Directory
-              </button>
-            </div>
+            {process.env.NODE_ENV === 'development' || typeof window !== 'undefined' && window.location.hostname === 'localhost' ? (
+              <div className="flex gap-2" role="radiogroup" aria-label="Scan target type">
+                <button
+                  onClick={() => setScanMode("github")}
+                  disabled={scanning}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold transition-all ${
+                    scanMode === "github"
+                      ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40"
+                      : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border-2 border-[var(--color-border)]"
+                  }`}
+                  role="radio"
+                  aria-checked={scanMode === "github"}
+                  aria-label="Scan GitHub repository"
+                >
+                  <Github className="h-4 w-4" aria-hidden="true" />
+                  GitHub Repo
+                </button>
+                <button
+                  onClick={() => setScanMode("local")}
+                  disabled={scanning}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold transition-all ${
+                    scanMode === "local"
+                      ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40"
+                      : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border-2 border-[var(--color-border)]"
+                  }`}
+                  role="radio"
+                  aria-checked={scanMode === "local"}
+                  aria-label="Scan local directory"
+                >
+                  <FolderOpen className="h-4 w-4" aria-hidden="true" />
+                  Local Directory
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40">
+                  <Github className="h-4 w-4" aria-hidden="true" />
+                  GitHub Repository Scanning
+                </div>
+                <p className="text-[11px] text-[var(--color-text-muted)] text-center">
+                  Local directory scanning is only available in development mode
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Input Fields */}
