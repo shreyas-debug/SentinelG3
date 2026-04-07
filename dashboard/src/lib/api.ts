@@ -268,7 +268,7 @@ export function startScan(
   }
 
   // Always send auto_apply so the backend respects Incremental Healing mode
-  body.auto_apply = options?.autoApply ?? true;
+  body.auto_apply = options?.autoApply ?? false;
 
   fetch(`${API_BASE}/scan`, {
     method: "POST",
@@ -278,7 +278,9 @@ export function startScan(
   })
     .then(async (res) => {
       if (!res.ok || !res.body) {
-        onEvent({ type: "error", data: { message: `HTTP ${res.status}` } });
+        const errorText = await res.text().catch(() => "");
+        const errorMsg = errorText || `HTTP ${res.status}`;
+        onEvent({ type: "error", data: { message: errorMsg } });
         onDone();
         return;
       }
