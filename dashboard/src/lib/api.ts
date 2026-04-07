@@ -62,6 +62,7 @@ export type SSEEvent =
   | { type: "patch"; data: HealingEntry }
   | { type: "summary"; data: HealingSummary }
   | { type: "pr"; data: PRResult }
+  | { type: "no_pr_info"; data: { message: string; instructions: string[]; reason: string; healed_count: number } }
   | { type: "error"; data: { message: string } };
 
 /**
