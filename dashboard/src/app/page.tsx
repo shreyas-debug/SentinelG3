@@ -345,6 +345,7 @@ export default function Dashboard() {
   const [phase, setPhase] = useState<"idle" | "scanning" | "patching" | "complete">("idle");
   const [isApplyingAll, setIsApplyingAll] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [noTokenWarning, setNoTokenWarning] = useState<{message: string; instructions: string[]} | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
 
   // Filtering state
@@ -491,6 +492,12 @@ export default function Dashboard() {
           case "pr":
             setPrResult(event.data);
             break;
+          case "no_pr_info":
+            setNoTokenWarning({
+              message: event.data.message,
+              instructions: event.data.instructions
+            });
+            break;
           case "error":
             setLogs((prev) => [...prev, `ERROR: ${event.data.message}`]);
             break;
@@ -614,6 +621,34 @@ export default function Dashboard() {
             >
               View PR <ExternalLink className="h-3 w-3" />
             </a>
+          </div>
+        )}
+
+        {/* No Token Warning Banner */}
+        {noTokenWarning && !prResult && (
+          <div className="flex items-start gap-3 rounded-xl border border-[var(--color-amber)]/30 bg-[var(--color-amber)]/5 px-5 py-4 glass print:hidden">
+            <AlertTriangle className="h-5 w-5 text-[var(--color-amber)] shrink-0 mt-0.5" />
+            <div className="flex-1 space-y-2">
+              <p className="text-sm font-semibold text-[var(--color-text-primary)]">{noTokenWarning.message}</p>
+              <div className="space-y-1.5">
+                <p className="text-xs font-semibold text-[var(--color-text-secondary)] uppercase tracking-wide">How to Apply Fixes:</p>
+                <ul className="text-xs text-[var(--color-text-muted)] space-y-1">
+                  {noTokenWarning.instructions.map((instruction, i) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <span className="text-[var(--color-amber)] shrink-0 mt-0.5">•</span>
+                      <span>{instruction}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            <button
+              onClick={() => setNoTokenWarning(null)}
+              className="text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] shrink-0"
+              aria-label="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         )}
 
