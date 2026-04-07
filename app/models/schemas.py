@@ -147,7 +147,7 @@ class HealingEntry(BaseModel):
     """One vulnerability + its fix outcome inside a healing cycle."""
 
     vulnerability: Vulnerability
-    patch: PatchResult
+    patch: PatchResult | None = None
     healed: bool = False
 
 

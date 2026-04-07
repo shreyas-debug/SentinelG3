@@ -32,5 +32,8 @@ Thumbs.db
 run_manifest.json
 *.bak.*
 
+# Sentinel-G3 backups directory
+.sentinel-g3/
+
 # Test lab patched files should not be committed
 # (golden copies in test_lab_golden/ are the source of truth)

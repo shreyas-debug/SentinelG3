@@ -62,6 +62,17 @@ This is not a wrapper around an LLM. It's an **agentic system** where specialise
 
 ---
 
+## Security & Safety Guards
+
+In a real-world environment, autonomous AI agents need strict guardrails. Sentinel-G3 implements multiple layers of protection:
+
+- **On-Demand Fix Generation (Incremental Healing)** — By default, the system audits the code but waits for human approval before generating or applying fixes. This saves AI tokens on low-severity issues and ensures absolute human oversight.
+- **Safe Versioned Backups & Rollback** — Before any file is physically modified, a timestamped copy is saved in a dedicated `.sentinel-g3/backups/` directory (preventing loose backup files from unexpectedly exposing secrets to the web root). Applied fixes can be instantly reverted in the UI.
+- **Strict API Rate Limiting** — Expensive LLM endpoints (`/scan`, `/fix`) are heavily rate-limited per IP using `slowapi` to prevent token exhaustion or denial-of-wallet attacks.
+- **Path Traversal Protection** — Local directory scans lock inputs against strict `ALLOWED_SCAN_ROOTS` settings to prevent an attacker from auditing arbitrary server files (like `/etc/passwd`).
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -248,6 +259,9 @@ The Next.js 15 dashboard connects to the backend via **Server-Sent Events** for 
 - **Healing History** — expandable table with severity badges and status
 - **Chain of Thought** — side-by-side Auditor and Fixer reasoning panels
 - **Code Diff** — Shiki syntax-highlighted side-by-side comparison (original vs. healed)
+- **Granular Controls** — per-issue "Generate Fix", "Apply", and "Rollback" buttons
+- **Vulnerability Filters** — filter by Severity Pills (Critical, High, Medium, Low) and search string
+- **Settings Panel** — a slide-out configuration sidebar for scan modes, repository URLs, and credentials
 - **Thinking Animation** — pulsing progress bars while Gemini reasons
 - **Dark "War Room" Aesthetic** — emerald for healed, amber for threats, red for critical
 
@@ -309,8 +323,11 @@ SentinelG3/
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/v1/scan` | Start a scan — returns SSE stream (`log`, `vuln`, `patch`, `summary` events) |
-| `GET` | `/api/v1/history` | Retrieve the latest `run_manifest.json` |
+| `POST` | `/api/v1/scan` | Start a security audit (Audit-only by default) — returns SSE stream |
+| `POST` | `/api/v1/fix` | Generate a patch for a specific vulnerability on-demand — returns SSE stream |
+| `POST` | `/api/v1/apply`| Write approved patches to disk or create a GitHub Pull Request |
+| `POST` | `/api/v1/rollback`| Instantly restore a file from its most recent safe backup |
+| `GET` | `/api/v1/history` | Retrieve the latest `run_manifest.json` reporting data |
 | `GET` | `/health` | Service health check |
 
 ---

@@ -269,12 +269,36 @@ class FixerAgent(BaseAgent):
     async def apply_patch(self, file_path: str, fixed_code: str) -> None:
         """Overwrite *file_path* with *fixed_code*, creating a backup first.
 
-        The backup is saved alongside the original as
-        ``<filename>.bak.<timestamp>``.
+        The backup is saved to ``.sentinel-g3/backups/`` relative to the
+        repository root, organized by original file path and timestamp.
 
         Uses ``asyncio.to_thread`` so file I/O doesn't block the event loop.
         """
         await asyncio.to_thread(self._write_patch, file_path, fixed_code)
+
+    @staticmethod
+    def list_backups(repo_root: str) -> list[dict[str, str]]:
+        """List all backups in the .sentinel-g3/backups directory.
+        
+        Returns a list of dicts with 'file_path', 'backup_path', and 'timestamp'.
+        """
+        backup_dir = Path(repo_root) / ".sentinel-g3" / "backups"
+        if not backup_dir.exists():
+            return []
+        
+        backups = []
+        for backup_file in backup_dir.rglob("*.bak.*"):
+            timestamp_str = backup_file.suffix.lstrip(".")
+            relative_path = backup_file.relative_to(backup_dir)
+            original_file = str(relative_path).rsplit(".bak.", 1)[0]
+            
+            backups.append({
+                "file_path": original_file,
+                "backup_path": str(backup_file),
+                "timestamp": timestamp_str,
+            })
+        
+        return sorted(backups, key=lambda x: x["timestamp"], reverse=True)
 
     @staticmethod
     def _write_patch(file_path: str, fixed_code: str) -> None:
@@ -285,11 +309,25 @@ class FixerAgent(BaseAgent):
             logger.error("Cannot apply patch — file not found: %s", target)
             raise FileNotFoundError(f"File not found: {target}")
 
-        # Create timestamped backup
+        # Determine repo root by walking up until we find .git or stop at root
+        repo_root = target.parent
+        while repo_root.parent != repo_root:
+            if (repo_root / ".git").exists():
+                break
+            repo_root = repo_root.parent
+        
+        # Create backup directory structure
+        backup_dir = repo_root / ".sentinel-g3" / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create timestamped backup with original directory structure
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = target.with_suffix(f"{target.suffix}.bak.{ts}")
-        shutil.copy2(target, backup)
-        logger.info("Backup saved: %s", backup)
+        relative_path = target.relative_to(repo_root)
+        backup_file = backup_dir / f"{relative_path}.bak.{ts}"
+        backup_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        shutil.copy2(target, backup_file)
+        logger.info("Backup saved: %s", backup_file)
 
         # Overwrite with fixed code
         target.write_text(fixed_code, encoding="utf-8")

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app.api.report import router as report_router
 from app.api.routes import router as api_router
@@ -22,11 +25,18 @@ logging.basicConfig(
     format="%(levelname)s:%(name)s: %(message)s",
 )
 
+# ── Rate Limiter ────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(
     title="Sentinel-G3",
     description="Autonomous self-healing security auditor powered by Gemini 3.",
     version="0.1.0",
 )
+
+# ── Rate Limit Error Handler ────────────────────────────
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── CORS (allow dashboard dev server) ───────────────────
 app.add_middleware(

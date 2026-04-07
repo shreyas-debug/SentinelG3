@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, useMemo } from "react";
 import {
   Shield,
   FolderOpen,
@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   X,
   Loader2,
+  Settings,
 } from "lucide-react";
 import { ScanButton } from "@/components/scan-button";
 import { LiveFeed } from "@/components/live-feed";
@@ -20,11 +21,252 @@ import { HealingHistory } from "@/components/healing-history";
 import { StatsBar } from "@/components/stats-bar";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { StatusBadge } from "@/components/status-badge";
-import { startScan, generateReport, applyBatchPatches, type HealingEntry, type HealingSummary, type PRResult, type SSEEvent } from "@/lib/api";
+import { VulnerabilityFilters, type SeverityFilter } from "@/components/vulnerability-filters";
+import { startScan, generateReport, applyBatchPatches, type HealingEntry, type HealingSummary, type PRResult, type SSEEvent, type PatchResult } from "@/lib/api";
 
 const DEFAULT_LOCAL = "E:\\Personal\\SentinelG3\\target_code";
 type ScanMode = "local" | "github";
 const FIXING_RE = /\[(\d+)\/(\d+)\]\s+Fixing\s+(.+?):(\d+)\s+\((\w+)\)/;
+
+/* ── Settings Panel (Slide-out) ──────────────────────── */
+function SettingsPanel({
+  open,
+  onClose,
+  scanMode,
+  setScanMode,
+  repoUrl,
+  setRepoUrl,
+  targetDir,
+  setTargetDir,
+  githubToken,
+  setGithubToken,
+  createPr,
+  setCreatePr,
+  autoApply,
+  setAutoApply,
+  scanning,
+  onScan,
+}: {
+  open: boolean;
+  onClose: () => void;
+  scanMode: ScanMode;
+  setScanMode: (mode: ScanMode) => void;
+  repoUrl: string;
+  setRepoUrl: (url: string) => void;
+  targetDir: string;
+  setTargetDir: (dir: string) => void;
+  githubToken: string;
+  setGithubToken: (token: string) => void;
+  createPr: boolean;
+  setCreatePr: (create: boolean) => void;
+  autoApply: boolean;
+  setAutoApply: (apply: boolean) => void;
+  scanning: boolean;
+  onScan: () => void;
+}) {
+  const [showAutoApplyModal, setShowAutoApplyModal] = useState(false);
+
+  if (!open) return null;
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div
+        className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+
+      {/* Panel */}
+      <div
+        className="fixed right-0 top-0 bottom-0 z-[101] w-full max-w-md bg-[var(--color-bg-card)] border-l border-[var(--color-border)] shadow-2xl overflow-y-auto"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+      >
+        <div className="p-6 space-y-6">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Settings className="h-5 w-5 text-[var(--color-cyan)]" aria-hidden="true" />
+              <h2 id="settings-title" className="text-lg font-bold text-[var(--color-text-primary)]">
+                Scan Settings
+              </h2>
+            </div>
+            <button
+              onClick={onClose}
+              className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors"
+              aria-label="Close settings panel"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          {/* Mode Toggle */}
+          <div>
+            <label className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2 block">
+              Scan Target
+            </label>
+            <div className="flex gap-2" role="radiogroup" aria-label="Scan target type">
+              <button
+                onClick={() => setScanMode("github")}
+                disabled={scanning}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold transition-all ${
+                  scanMode === "github"
+                    ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40"
+                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border-2 border-[var(--color-border)]"
+                }`}
+                role="radio"
+                aria-checked={scanMode === "github"}
+                aria-label="Scan GitHub repository"
+              >
+                <Github className="h-4 w-4" aria-hidden="true" />
+                GitHub Repo
+              </button>
+              <button
+                onClick={() => setScanMode("local")}
+                disabled={scanning}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold transition-all ${
+                  scanMode === "local"
+                    ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40"
+                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border-2 border-[var(--color-border)]"
+                }`}
+                role="radio"
+                aria-checked={scanMode === "local"}
+                aria-label="Scan local directory"
+              >
+                <FolderOpen className="h-4 w-4" aria-hidden="true" />
+                Local Directory
+              </button>
+            </div>
+          </div>
+
+          {/* Input Fields */}
+          {scanMode === "github" ? (
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="repo-url" className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2 block">
+                  Repository URL
+                </label>
+                <input
+                  id="repo-url"
+                  type="text"
+                  value={repoUrl}
+                  onChange={(e) => setRepoUrl(e.target.value)}
+                  placeholder="https://github.com/owner/repo"
+                  className="w-full bg-[var(--color-bg-terminal)] border border-[var(--color-border)] rounded-lg px-4 py-3 text-[13px] font-[var(--font-mono)] text-[var(--color-text-secondary)] focus:outline-none focus:border-[var(--color-emerald)] focus:ring-2 focus:ring-[var(--color-emerald)]/20 placeholder:text-[var(--color-text-muted)]/50"
+                  aria-required="true"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="github-token" className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2 block">
+                  GitHub Token (for PR)
+                </label>
+                <div className="relative">
+                  <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--color-text-muted)]" aria-hidden="true" />
+                  <input
+                    id="github-token"
+                    type="password"
+                    value={githubToken}
+                    onChange={(e) => setGithubToken(e.target.value)}
+                    placeholder="ghp_xxxxxxxxxxxx"
+                    className="w-full bg-[var(--color-bg-terminal)] border border-[var(--color-border)] rounded-lg pl-10 pr-4 py-3 text-[13px] font-[var(--font-mono)] text-[var(--color-text-secondary)] focus:outline-none focus:border-[var(--color-emerald)] focus:ring-2 focus:ring-[var(--color-emerald)]/20 placeholder:text-[var(--color-text-muted)]/50"
+                    aria-describedby="token-help"
+                  />
+                </div>
+                <p id="token-help" className="text-[10px] text-[var(--color-text-muted)] mt-1">
+                  Token is only used for this session and never stored
+                </p>
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={createPr}
+                  onChange={(e) => setCreatePr(e.target.checked)}
+                  disabled={!githubToken || scanning}
+                  className="accent-[var(--color-emerald)] h-4 w-4"
+                  aria-label="Create pull request after scan"
+                />
+                <span className="text-[13px] text-[var(--color-text-secondary)] font-medium">
+                  Create Pull Request after scan
+                </span>
+              </label>
+            </div>
+          ) : (
+            <div>
+              <label htmlFor="directory-path" className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2 block">
+                Directory Path
+              </label>
+              <input
+                id="directory-path"
+                type="text"
+                value={targetDir}
+                onChange={(e) => setTargetDir(e.target.value)}
+                placeholder="C:\path\to\project"
+                className="w-full bg-[var(--color-bg-terminal)] border border-[var(--color-border)] rounded-lg px-4 py-3 text-[13px] font-[var(--font-mono)] text-[var(--color-text-secondary)] focus:outline-none focus:border-[var(--color-emerald)] focus:ring-2 focus:ring-[var(--color-emerald)]/20 placeholder:text-[var(--color-text-muted)]/50"
+                aria-required="true"
+              />
+            </div>
+          )}
+
+          {/* Auto-Apply Toggle */}
+          <div className="border-t border-[var(--color-border)] pt-4">
+            <label className="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={autoApply}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setShowAutoApplyModal(true);
+                  } else {
+                    setAutoApply(false);
+                  }
+                }}
+                disabled={scanning}
+                className="accent-[var(--color-red)] h-4 w-4 mt-0.5"
+                aria-describedby="auto-apply-desc"
+              />
+              <div className="flex-1">
+                <span className={`text-[13px] font-bold ${
+                  autoApply ? "text-[var(--color-red)]" : "text-[var(--color-text-secondary)]"
+                }`}>
+                  {autoApply ? "⚠️ Auto-Apply Fixes (ON)" : "Auto-Apply Fixes"}
+                </span>
+                <p id="auto-apply-desc" className="text-[11px] text-[var(--color-text-muted)] mt-1">
+                  {autoApply
+                    ? "Patches will be written to disk automatically during scan."
+                    : "Review and approve each fix manually (recommended)."}
+                </p>
+              </div>
+            </label>
+          </div>
+
+          {/* Scan Button */}
+          <div className="border-t border-[var(--color-border)] pt-4">
+            <ScanButton
+              scanning={scanning}
+              complete={false}
+              onClick={() => {
+                onScan();
+                onClose();
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Auto-Apply confirmation modal */}
+      {showAutoApplyModal && (
+        <AutoApplyModal
+          onConfirm={() => { setAutoApply(true); setShowAutoApplyModal(false); }}
+          onCancel={() => setShowAutoApplyModal(false)}
+        />
+      )}
+    </>
+  );
+}
 
 /* ── Auto-Apply confirmation modal ──────────────────────── */
 function AutoApplyModal({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
@@ -83,23 +325,52 @@ export default function Dashboard() {
   const [createPr, setCreatePr]     = useState(true);
   const [prResult, setPrResult]     = useState<PRResult | null>(null);
   const [summary, setSummary]       = useState<HealingSummary | null>(null);
-
-  /**
-   * Auto-Apply: defaults to FALSE (review-first is the safe default).
-   * User must consciously opt in via the toggle with a confirmation modal.
-   */
   const [autoApply, setAutoApply]   = useState(false);
-  const [showAutoApplyModal, setShowAutoApplyModal] = useState(false);
-
   const [activeFix, setActiveFix]       = useState<string | null>(null);
   const [liveThinking, setLiveThinking] = useState("");
   const [activeVulnCode, setActiveVulnCode] = useState("");
   const [activeFilePath, setActiveFilePath] = useState("");
   const [phase, setPhase] = useState<"idle" | "scanning" | "patching" | "complete">("idle");
   const [isApplyingAll, setIsApplyingAll] = useState(false);
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
 
+  // Filtering state
+  const [activeSeverity, setActiveSeverity] = useState<SeverityFilter>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+
   const activeTarget = scanMode === "github" ? repoUrl : targetDir;
+
+  // Compute severity counts
+  const severityCounts = useMemo(() => {
+    const counts = { all: entries.length, critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    entries.forEach((e) => {
+      const sev = e.vulnerability.severity.toLowerCase();
+      if (sev === "critical") counts.critical++;
+      else if (sev === "high") counts.high++;
+      else if (sev === "medium") counts.medium++;
+      else if (sev === "low") counts.low++;
+      else if (sev === "info") counts.info++;
+    });
+    return counts;
+  }, [entries]);
+
+  // Filter entries based on severity and search query
+  const filteredEntries = useMemo(() => {
+    return entries.filter((e) => {
+      const severityMatch =
+        activeSeverity === "all" || e.vulnerability.severity.toLowerCase() === activeSeverity;
+
+      const query = searchQuery.toLowerCase();
+      const searchMatch =
+        !query ||
+        e.vulnerability.file_path.toLowerCase().includes(query) ||
+        e.vulnerability.issue.toLowerCase().includes(query) ||
+        (e.patch?.original_code || "").toLowerCase().includes(query);
+
+      return severityMatch && searchMatch;
+    });
+  }, [entries, activeSeverity, searchQuery]);
 
   const handleApplyPatches = async (patches: { file_path: string; new_content: string }[]) => {
     return await applyBatchPatches(activeTarget, patches, {
@@ -109,9 +380,9 @@ export default function Dashboard() {
   };
 
   const handleApplyAllUnfixed = async () => {
-    const unfixed = entries
-      .filter((e) => e.patch.success && e.patch.fixed_code && !e.healed)
-      .map((e) => ({ file_path: e.patch.file_path, new_content: e.patch.fixed_code }));
+    const unfixed = filteredEntries
+      .filter((e) => e.patch?.success && e.patch?.fixed_code && !e.healed)
+      .map((e) => ({ file_path: e.patch!.file_path, new_content: e.patch!.fixed_code }));
 
     if (unfixed.length === 0) return;
     
@@ -128,7 +399,7 @@ export default function Dashboard() {
       }
       setEntries((prev) =>
         prev.map((entry) => {
-          if (entry.patch.success && entry.patch.fixed_code && !entry.healed) {
+          if (entry.patch?.success && entry.patch?.fixed_code && !entry.healed) {
             return { ...entry, healed: true };
           }
           return entry;
@@ -240,18 +511,30 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-[var(--color-bg-primary)] bg-grid-pattern">
-      {/* Auto-Apply confirmation modal */}
-      {showAutoApplyModal && (
-        <AutoApplyModal
-          onConfirm={() => { setAutoApply(true); setShowAutoApplyModal(false); }}
-          onCancel={() => setShowAutoApplyModal(false)}
-        />
-      )}
+      {/* Settings Panel */}
+      <SettingsPanel
+        open={settingsPanelOpen}
+        onClose={() => setSettingsPanelOpen(false)}
+        scanMode={scanMode}
+        setScanMode={setScanMode}
+        repoUrl={repoUrl}
+        setRepoUrl={setRepoUrl}
+        targetDir={targetDir}
+        setTargetDir={setTargetDir}
+        githubToken={githubToken}
+        setGithubToken={setGithubToken}
+        createPr={createPr}
+        setCreatePr={setCreatePr}
+        autoApply={autoApply}
+        setAutoApply={setAutoApply}
+        scanning={scanning}
+        onScan={handleScan}
+      />
 
-      {/* ── Header ──────────────────────────────────────── */}
+      {/* ── Header (Clean & Minimal) ──────────────────────── */}
       <header className="border-b border-[var(--color-border)] glass sticky top-0 z-50">
         <div className="max-w-7xl mx-auto flex items-center justify-between px-6 py-4">
-          {/* Left: Logo */}
+          {/* Left: Logo & Status */}
           <div className="flex items-center gap-3">
             <div className="relative">
               <Shield className="h-8 w-8 text-[var(--color-emerald)]" />
@@ -275,110 +558,24 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Right: Scan controls */}
-          <div className="flex items-center gap-4">
-
-
-            <div className="hidden sm:block">
-              {/* Mode toggle */}
-              <div className="flex items-center gap-1 mb-1.5">
-                <button
-                  onClick={() => setScanMode("github")}
-                  disabled={scanning}
-                  className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] uppercase tracking-wider font-semibold transition-all ${
-                    scanMode === "github"
-                      ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border border-[var(--color-emerald)]/40"
-                      : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border border-transparent"
-                  }`}
-                >
-                  <Github className="h-3 w-3" />
-                  GitHub
-                </button>
-                <button
-                  onClick={() => setScanMode("local")}
-                  disabled={scanning}
-                  className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] uppercase tracking-wider font-semibold transition-all ${
-                    scanMode === "local"
-                      ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border border-[var(--color-emerald)]/40"
-                      : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border border-transparent"
-                  }`}
-                >
-                  <FolderOpen className="h-3 w-3" />
-                  Local
-                </button>
-              </div>
-
-              {/* Input fields */}
-              {scanMode === "github" ? (
-                <div className="space-y-1.5">
-                  <input
-                    type="text"
-                    value={repoUrl}
-                    onChange={(e) => setRepoUrl(e.target.value)}
-                    placeholder="https://github.com/owner/repo"
-                    className="bg-[var(--color-bg-terminal)] border border-[var(--color-border)] rounded-md px-3 py-1.5 text-xs font-[var(--font-mono)] text-[var(--color-text-secondary)] w-96 focus:outline-none focus:border-[var(--color-emerald)] placeholder:text-[var(--color-text-muted)]/50"
-                  />
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <KeyRound className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--color-text-muted)]" />
-                      <input
-                        type="password"
-                        value={githubToken}
-                        onChange={(e) => setGithubToken(e.target.value)}
-                        placeholder="GitHub token (for PR)"
-                        className="bg-[var(--color-bg-terminal)] border border-[var(--color-border)] rounded-md pl-7 pr-3 py-1 text-xs font-[var(--font-mono)] text-[var(--color-text-secondary)] w-full focus:outline-none focus:border-[var(--color-emerald)] placeholder:text-[var(--color-text-muted)]/50"
-                      />
-                    </div>
-                    <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={createPr}
-                        onChange={(e) => setCreatePr(e.target.checked)}
-                        disabled={!githubToken || scanning}
-                        className="accent-[var(--color-emerald)] h-3 w-3"
-                      />
-                      <span className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider font-semibold whitespace-nowrap">
-                        Create PR
-                      </span>
-                    </label>
-                  </div>
-                </div>
-              ) : (
-                <input
-                  type="text"
-                  value={targetDir}
-                  onChange={(e) => setTargetDir(e.target.value)}
-                  placeholder="C:\path\to\project"
-                  className="bg-[var(--color-bg-terminal)] border border-[var(--color-border)] rounded-md px-3 py-1.5 text-xs font-[var(--font-mono)] text-[var(--color-text-secondary)] w-96 focus:outline-none focus:border-[var(--color-emerald)] placeholder:text-[var(--color-text-muted)]/50"
-                />
-              )}
-            </div>
-            <div className="flex items-center gap-4 border-l border-[var(--color-border)] pl-4 ml-2">
-              <label
-                className="hidden sm:flex items-center gap-1.5 cursor-pointer select-none print:hidden"
-                title="Auto-Apply: when ON, patches are written to disk without review"
+          {/* Right: Action buttons */}
+          <div className="flex items-center gap-3">
+            {phase === "complete" && entries.length > 0 && (
+              <button
+                onClick={handleExportReport}
+                className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-cyan)] bg-[var(--color-cyan)]/10 hover:bg-[var(--color-cyan)]/20 px-4 py-2 text-[12px] font-bold text-[var(--color-cyan)] transition-all active:scale-95"
               >
-                <input
-                  type="checkbox"
-                  checked={autoApply}
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      setShowAutoApplyModal(true); // Show scary confirmation
-                    } else {
-                      setAutoApply(false);
-                    }
-                  }}
-                  disabled={scanning}
-                  className="accent-[var(--color-red)] h-3.5 w-3.5"
-                />
-                <span className={`text-[11px] font-bold uppercase tracking-wider ${
-                  autoApply ? "text-[var(--color-red)] shadow-[0_0_10px_rgba(255,50,50,0.5)]" : "text-[var(--color-text-muted)]"
-                }`}>
-                  {autoApply ? "⚠️ Auto-Apply ON" : "Auto-Apply Fixes"}
-                </span>
-              </label>
-              <ScanButton scanning={scanning} complete={phase === "complete"} onClick={handleScan} />
-            </div>
+                <FileDown className="h-4 w-4" />
+                Export Report
+              </button>
+            )}
+            <button
+              onClick={() => setSettingsPanelOpen(true)}
+              className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-emerald)] bg-[var(--color-emerald)]/10 hover:bg-[var(--color-emerald)]/20 px-4 py-2 text-[12px] font-bold text-[var(--color-emerald)] transition-all active:scale-95"
+            >
+              <Settings className="h-4 w-4" />
+              New Scan
+            </button>
           </div>
         </div>
       </header>
@@ -408,22 +605,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Export Report button */}
-        {phase === "complete" && entries.length > 0 && (
-          <div className="flex items-center justify-between py-1 print:hidden">
-            <p className="text-[11px] text-[var(--color-text-muted)]">
-              {stats.found} vulnerabilities found · {stats.healed} healed · {Math.max(0, stats.found - stats.healed)} need review
-            </p>
-            <button
-              onClick={handleExportReport}
-              className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-cyan)] bg-[var(--color-cyan)]/10 hover:bg-[var(--color-cyan)] px-6 py-3 text-[14px] font-bold text-[var(--color-cyan)] hover:text-[#050b14] shadow-[0_0_15px_rgba(0,184,217,0.3)] hover:shadow-[0_0_25px_rgba(0,184,217,0.6)] active:scale-95 transition-all"
-            >
-              <FileDown className="h-5 w-5" />
-              Export Security Report
-            </button>
-          </div>
-        )}
-
         {/* Live Feed */}
         <LiveFeed logs={logs} scanning={scanning} />
 
@@ -437,15 +618,31 @@ export default function Dashboard() {
           />
         )}
 
+        {/* Vulnerability Filters */}
+        {entries.length > 0 && (
+          <VulnerabilityFilters
+            activeSeverity={activeSeverity}
+            onSeverityChange={setActiveSeverity}
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            counts={severityCounts}
+          />
+        )}
+
         {/* Healing History */}
         <section>
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-[11px] font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">
               Healing History
+              {filteredEntries.length !== entries.length && (
+                <span className="ml-2 text-[var(--color-cyan)]">
+                  ({filteredEntries.length} of {entries.length} shown)
+                </span>
+              )}
             </h2>
             
             {/* Bulk Apply Button */}
-            {entries.some((e) => e.patch.success && e.patch.fixed_code && !e.healed) && (
+            {filteredEntries.some((e) => e.patch?.success && e.patch?.fixed_code && !e.healed) && (
               <button
                 onClick={handleApplyAllUnfixed}
                 disabled={isApplyingAll || scanning}
@@ -459,7 +656,38 @@ export default function Dashboard() {
               </button>
             )}
           </div>
-          <HealingHistory entries={entries} onLog={pushLog} onApplyPatches={handleApplyPatches} />
+          <HealingHistory
+            entries={filteredEntries}
+            onLog={pushLog}
+            onApplyPatches={handleApplyPatches}
+            repoRoot={activeTarget}
+            onPatchGenerated={(index, patch, fixerThought, modelUsed) => {
+              setEntries((prev) => {
+                const updated = [...prev];
+                const actualIndex = entries.findIndex((e) => e === filteredEntries[index]);
+                if (actualIndex !== -1) {
+                  updated[actualIndex] = {
+                    ...updated[actualIndex],
+                    patch,
+                    fixer_thought: fixerThought,
+                    model_used: modelUsed,
+                  };
+                }
+                return updated;
+              });
+            }}
+            onRollback={(index) => {
+              setEntries((prev) => {
+                const updated = [...prev];
+                const actualIndex = entries.findIndex((e) => e === filteredEntries[index]);
+                if (actualIndex !== -1) {
+                  updated[actualIndex] = { ...updated[actualIndex], healed: false };
+                }
+                return updated;
+              });
+              setStats((s) => ({ ...s, healed: Math.max(0, s.healed - 1) }));
+            }}
+          />
         </section>
 
         {/* Footer */}

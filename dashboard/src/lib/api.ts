@@ -24,7 +24,7 @@ export interface PatchResult {
 
 export interface HealingEntry {
   vulnerability: Vulnerability;
-  patch: PatchResult;
+  patch: PatchResult | null;
   healed: boolean;
   auditor_thought?: string;
   fixer_thought?: string;
@@ -137,6 +137,111 @@ export async function generateReport(summary: HealingSummary): Promise<string> {
   const html = await res.text();
   const blob = new Blob([html], { type: "text/html" });
   return URL.createObjectURL(blob);
+}
+
+/**
+ * Generate a security patch for a single vulnerability on-demand.
+ * Returns an SSE stream with thinking chunks and the final patch result.
+ */
+export function generateFix(
+  vulnerability: Vulnerability,
+  originalCode: string,
+  onThinking: (text: string) => void,
+  onComplete: (patch: PatchResult, fixerThought: string, modelUsed: string) => void,
+  onError: (message: string) => void,
+): AbortController {
+  const controller = new AbortController();
+
+  const body = {
+    vulnerability,
+    original_code: originalCode,
+  };
+
+  fetch(`${API_BASE}/fix`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok || !res.body) {
+        onError(`HTTP ${res.status}`);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let currentEvent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data: ") && currentEvent) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (currentEvent === "thinking") {
+                onThinking(data.text);
+              } else if (currentEvent === "patch") {
+                onComplete(
+                  data.patch,
+                  data.fixer_thought || "",
+                  data.model_used || "unknown"
+                );
+              } else if (currentEvent === "error") {
+                onError(data.message);
+              }
+            } catch {
+              /* skip malformed */
+            }
+            currentEvent = "";
+          }
+        }
+      }
+    })
+    .catch((err) => {
+      if (err.name !== "AbortError") {
+        onError(String(err));
+      }
+    });
+
+  return controller;
+}
+
+/**
+ * Rollback a file to its most recent backup from .sentinel-g3/backups/.
+ */
+export async function rollbackFile(
+  filePath: string,
+  repoRoot: string,
+  backupTimestamp?: string
+): Promise<{ success: boolean; message: string; backup_used?: string }> {
+  const body = {
+    file_path: filePath,
+    repo_root: repoRoot,
+    backup_timestamp: backupTimestamp,
+  };
+
+  const res = await fetch(`${API_BASE}/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+    return { success: false, message: err.detail ?? `HTTP ${res.status}` };
+  }
+
+  return res.json();
 }
 
 /**

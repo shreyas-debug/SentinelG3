@@ -205,7 +205,7 @@ function AIReasoningTab({ entry }: { entry: HealingEntry }) {
 
 /* ── Code Diff Tab ────────────────────────────────────── */
 function CodeDiffTab({ entry }: { entry: HealingEntry }) {
-  if (!entry.patch.original_code) {
+  if (!entry.patch?.original_code) {
     return (
       <p className="text-[12px] text-[var(--color-text-muted)] italic text-center py-6">
         No code diff available for this finding.
@@ -222,6 +222,157 @@ function CodeDiffTab({ entry }: { entry: HealingEntry }) {
       </div>
       <CodeDiff original={entry.patch.original_code} fixed={entry.patch.fixed_code} />
     </div>
+  );
+}
+
+/* ── Generate Fix Button (On-Demand Fix Generation) ───── */
+function GenerateFix({
+  entry,
+  onGenerated,
+  onLog,
+}: {
+  entry: HealingEntry;
+  onGenerated: (patch: PatchResult, fixerThought: string, modelUsed: string) => void;
+  onLog: (msg: string) => void;
+}) {
+  const [state, setState] = useState<"idle" | "generating" | "done" | "error">("idle");
+  const [errMsg, setErrMsg] = useState("");
+  const [thinking, setThinking] = useState("");
+
+  if (entry.patch) {
+    return null;
+  }
+
+  if (state === "error") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-red-400">
+        <AlertTriangle className="h-3.5 w-3.5" />
+        {errMsg || "Generation failed"}
+      </span>
+    );
+  }
+
+  if (state === "generating") {
+    return (
+      <div className="space-y-2">
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-cyan)]">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Generating fix…
+        </span>
+        {thinking && (
+          <div className="text-[10px] text-[var(--color-text-muted)] font-mono bg-[var(--color-bg-terminal)] p-2 rounded border border-[var(--color-border)] max-h-24 overflow-y-auto">
+            {thinking}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => {
+        setState("generating");
+        setThinking("");
+        onLog(`  🔧 Generating fix for ${entry.vulnerability.file_path}:${entry.vulnerability.line_number}…`);
+
+        const { generateFix } = require("@/lib/api");
+        generateFix(
+          entry.vulnerability,
+          "",
+          (text: string) => setThinking((prev) => prev + text),
+          (patch: PatchResult, fixerThought: string, modelUsed: string) => {
+            setState("done");
+            onGenerated(patch, fixerThought, modelUsed);
+            onLog(`  ✓ Fix generated for ${entry.vulnerability.file_path}:${entry.vulnerability.line_number}`);
+          },
+          (message: string) => {
+            setState("error");
+            setErrMsg(message);
+            onLog(`  ✗ Fix generation failed: ${message}`);
+          }
+        );
+      }}
+      className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold
+                 bg-[var(--color-cyan)]/20 border border-[var(--color-cyan)]/40 text-[var(--color-cyan)]
+                 hover:bg-[var(--color-cyan)]/30 transition-all active:scale-95 shadow-sm"
+    >
+      <Wrench className="h-3.5 w-3.5" />
+      Generate Fix
+    </button>
+  );
+}
+
+/* ── Rollback Button ─────────────────────────────────── */
+function RollbackButton({
+  entry,
+  repoRoot,
+  onRollback,
+  onLog,
+}: {
+  entry: HealingEntry;
+  repoRoot: string;
+  onRollback: () => void;
+  onLog: (msg: string) => void;
+}) {
+  const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [errMsg, setErrMsg] = useState("");
+
+  if (!entry.healed) {
+    return null;
+  }
+
+  if (state === "done") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-amber)]">
+        <CheckCircle2 className="h-3.5 w-3.5" />
+        Rolled back
+      </span>
+    );
+  }
+
+  if (state === "error") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-red-400">
+        <AlertTriangle className="h-3.5 w-3.5" />
+        {errMsg || "Rollback failed"}
+      </span>
+    );
+  }
+
+  if (state === "loading") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Rolling back…
+      </span>
+    );
+  }
+
+  return (
+    <button
+      onClick={async () => {
+        setState("loading");
+        onLog(`  ⏪ Rolling back ${entry.vulnerability.file_path}…`);
+
+        const { rollbackFile } = await import("@/lib/api");
+        const result = await rollbackFile(entry.vulnerability.file_path, repoRoot);
+
+        if (result.success) {
+          setState("done");
+          onRollback();
+          onLog(`  ✓ Rolled back ${entry.vulnerability.file_path} from backup`);
+        } else {
+          setState("error");
+          setErrMsg(result.message);
+          onLog(`  ✗ Rollback failed: ${result.message}`);
+        }
+      }}
+      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-bold
+                 bg-[var(--color-amber)]/20 border border-[var(--color-amber)]/40 text-[var(--color-amber)]
+                 hover:bg-[var(--color-amber)]/30 transition-all active:scale-95 shadow-sm"
+    >
+      Rollback
+    </button>
   );
 }
 
@@ -248,7 +399,7 @@ function ApproveFix({
       </span>
     );
   }
-  if (!entry.patch.success || !entry.patch.fixed_code) return null;
+  if (!entry.patch?.success || !entry.patch?.fixed_code) return null;
 
   if (state === "done") {
     return (
@@ -280,7 +431,7 @@ function ApproveFix({
   return (
     <button
       onClick={async () => {
-        if (!onApplyPatches) {
+        if (!onApplyPatches || !entry.patch) {
           setState("error");
           setErrMsg("Missing target");
           return;
@@ -323,25 +474,38 @@ function EntryRow({
   index,
   onLog,
   onApplyPatches,
+  repoRoot,
+  onPatchGenerated,
+  onRollback,
 }: {
   entry: HealingEntry;
   index: number;
   onLog: (msg: string) => void;
   onApplyPatches?: (patches: { file_path: string; new_content: string }[]) => Promise<{ success: boolean; message: string; pr_url?: string }>;
+  repoRoot?: string;
+  onPatchGenerated?: (index: number, patch: PatchResult, fixerThought: string, modelUsed: string) => void;
+  onRollback?: (index: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [healed, setHealed] = useState(entry.healed);
+  const [localPatch, setLocalPatch] = useState(entry.patch);
 
   useEffect(() => {
     if (entry.healed) setHealed(true);
   }, [entry.healed]);
+  
+  useEffect(() => {
+    if (entry.patch) setLocalPatch(entry.patch);
+  }, [entry.patch]);
+
   const [simplified, setSimplified] = useState(false);
   const v = entry.vulnerability;
 
-  const isPendingReview = entry.patch.success && entry.patch.fixed_code && !healed;
+  const isPendingReview = localPatch?.success && localPatch?.fixed_code && !healed;
+  const needsGeneration = !localPatch;
   const statusVariant = healed ? "healed" : isPendingReview ? "pending" : "unfixed";
-  const statusLabel   = healed ? "Healed"  : isPendingReview ? "Pending Review" : "Unfixed";
+  const statusLabel   = healed ? "Healed"  : isPendingReview ? "Pending Review" : needsGeneration ? "No Fix Yet" : "Unfixed";
 
   return (
     <div className="mb-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-card)] shadow-[0_4px_12px_rgba(0,0,0,0.2)] overflow-hidden transition-all hover:border-[var(--color-cyan)]/30">
@@ -374,7 +538,7 @@ function EntryRow({
       {/* ── Expanded card ── */}
       {open && (
         <div className="mx-3 mb-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)]/30 overflow-hidden">
-          {/* Card header: title + Approve button */}
+          {/* Card header: title + action buttons */}
           <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)]/50">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-0.5">
@@ -387,14 +551,41 @@ function EntryRow({
                 {v.issue.length > 120 ? v.issue.slice(0, 120) + "…" : v.issue}
               </p>
             </div>
-            {/* Always-visible Approve Fix button */}
-            <div className="shrink-0 pt-0.5">
-              <ApproveFix
-                entry={{ ...entry, healed }}
-                onApproved={() => setHealed(true)}
-                onLog={onLog}
-                onApplyPatches={onApplyPatches}
-              />
+            {/* Action buttons */}
+            <div className="shrink-0 pt-0.5 flex items-center gap-2">
+              {needsGeneration && (
+                <GenerateFix
+                  entry={entry}
+                  onGenerated={(patch, fixerThought, modelUsed) => {
+                    setLocalPatch(patch);
+                    if (onPatchGenerated) {
+                      onPatchGenerated(index, patch, fixerThought, modelUsed);
+                    }
+                  }}
+                  onLog={onLog}
+                />
+              )}
+              {!needsGeneration && (
+                <>
+                  {repoRoot && (
+                    <RollbackButton
+                      entry={{ ...entry, healed }}
+                      repoRoot={repoRoot}
+                      onRollback={() => {
+                        setHealed(false);
+                        if (onRollback) onRollback(index);
+                      }}
+                      onLog={onLog}
+                    />
+                  )}
+                  <ApproveFix
+                    entry={{ ...entry, patch: localPatch, healed }}
+                    onApproved={() => setHealed(true)}
+                    onLog={onLog}
+                    onApplyPatches={onApplyPatches}
+                  />
+                </>
+              )}
             </div>
           </div>
 
@@ -427,7 +618,12 @@ function EntryRow({
             )}
             {activeTab === "attack" && <AttackVectorTab vulnerability={v} />}
             {activeTab === "reasoning" && <AIReasoningTab entry={entry} />}
-            {activeTab === "diff" && <CodeDiffTab entry={entry} />}
+            {activeTab === "diff" && localPatch && <CodeDiffTab entry={{ ...entry, patch: localPatch }} />}
+            {activeTab === "diff" && !localPatch && (
+              <p className="text-[12px] text-[var(--color-text-muted)] italic text-center py-6">
+                Generate a fix to see the code diff.
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -441,10 +637,16 @@ export function HealingHistory({
   entries,
   onLog,
   onApplyPatches,
+  repoRoot,
+  onPatchGenerated,
+  onRollback,
 }: {
   entries: HealingEntry[];
   onLog?: (msg: string) => void;
   onApplyPatches?: (patches: { file_path: string; new_content: string }[]) => Promise<{ success: boolean; message: string; pr_url?: string }>;
+  repoRoot?: string;
+  onPatchGenerated?: (index: number, patch: PatchResult, fixerThought: string, modelUsed: string) => void;
+  onRollback?: (index: number) => void;
 }) {
   const log = onLog ?? (() => {});
 
@@ -494,7 +696,16 @@ export function HealingHistory({
       {/* Rows */}
       <div className="space-y-4">
         {entries.map((entry, i) => (
-          <EntryRow key={i} entry={entry} index={i} onLog={log} onApplyPatches={onApplyPatches} />
+          <EntryRow
+            key={i}
+            entry={entry}
+            index={i}
+            onLog={log}
+            onApplyPatches={onApplyPatches}
+            repoRoot={repoRoot}
+            onPatchGenerated={onPatchGenerated}
+            onRollback={onRollback}
+          />
         ))}
       </div>
     </div>

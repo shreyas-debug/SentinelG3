@@ -20,12 +20,15 @@ from typing import AsyncGenerator
 from urllib.parse import urlparse
 
 import aiohttp
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.agents.auditor import AuditorAgent
 from app.agents.fixer import FixerAgent
+from app.config import settings
 from app.models.schemas import (
     AuditRequest,
     AuditResponse,
@@ -40,9 +43,45 @@ from app.orchestrator import SentinelOrchestrator
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["audit"])
+limiter = Limiter(key_func=get_remote_address)
 
 # ── Allowed Git hosts (SSRF protection) ─────────────────
 _ALLOWED_GIT_HOSTS: set[str] = {"github.com", "gitlab.com", "bitbucket.org"}
+
+# ── Path traversal guard ─────────────────────────────────
+
+def _validate_local_path(path: Path) -> None:
+    """Validate that a local directory path is within allowed scan roots.
+    
+    Raises ``HTTPException(403)`` if the path is outside all allowed roots.
+    If ``ALLOWED_SCAN_ROOTS`` is empty, all paths are permitted (use with caution).
+    """
+    if not settings.ALLOWED_SCAN_ROOTS:
+        return
+    
+    allowed_roots = [
+        Path(p.strip()).resolve()
+        for p in settings.ALLOWED_SCAN_ROOTS.split(";")
+        if p.strip()
+    ]
+    
+    if not allowed_roots:
+        return
+    
+    resolved_path = path.resolve()
+    
+    for root in allowed_roots:
+        try:
+            resolved_path.relative_to(root)
+            return
+        except ValueError:
+            continue
+    
+    raise HTTPException(
+        status_code=403,
+        detail=f"Path '{path}' is outside the allowed scan roots. "
+               f"Allowed roots: {', '.join(str(r) for r in allowed_roots)}"
+    )
 
 
 def _validate_repo_url(url: str) -> str:
@@ -206,10 +245,10 @@ class ScanRequest(BaseModel):
         description="If True and github_token is provided, create a PR with fixes.",
     )
     auto_apply: bool = Field(
-        default=True,
+        default=False,
         description=(
-            "If True (default), patches are applied to disk automatically. "
-            "If False (Incremental Healing mode), patches are generated and returned "
+            "If True, patches are applied to disk automatically. "
+            "If False (default, Incremental Healing mode), patches are generated and returned "
             "without modifying any files — the user must call POST /apply to approve each fix."
         ),
     )
@@ -232,6 +271,149 @@ def _sse_event(event: str, data: dict) -> str:
     """Format a Server-Sent Event."""
     payload = json.dumps(data, default=str)
     return f"event: {event}\ndata: {payload}\n\n"
+
+
+# ── POST /fix  (On-Demand Fix Generation) ───────────────
+
+class FixRequest(BaseModel):
+    vulnerability: Vulnerability = Field(description="The vulnerability to fix.")
+    original_code: str = Field(description="The original source code before the fix.", min_length=1)
+    repo_root: str | None = Field(default=None, description="Repository root for context (optional).")
+    
+    @classmethod
+    def model_validate(cls, obj: dict) -> "FixRequest":
+        """Custom validation"""
+        if isinstance(obj, dict):
+            if not obj.get("original_code", "").strip():
+                raise ValueError("original_code cannot be empty")
+        return super().model_validate(obj)
+
+@router.post("/fix")
+@limiter.limit("5/minute")
+async def generate_fix(request: Request, body: FixRequest):
+    """Generate a security patch for a single vulnerability on-demand.
+    
+    This endpoint runs the Fixer agent only, without applying the patch.
+    The scan (/scan) endpoint now runs audit-only by default.
+    
+    Returns SSE stream with:
+      - `thinking` : real-time chain-of-thought chunks
+      - `patch`    : final PatchResult
+      - `error`    : if generation fails
+    """
+    # Validate input
+    if not body.original_code or not body.original_code.strip():
+        raise HTTPException(status_code=400, detail="original_code is required and cannot be empty")
+    
+    async def _stream() -> AsyncGenerator[str, None]:
+        orchestrator = SentinelOrchestrator()
+        fixer_thinking_parts: list[str] = []
+        
+        async def _on_thinking(text: str) -> None:
+            fixer_thinking_parts.append(text)
+            yield _sse_event("thinking", {"text": text})
+        
+        try:
+            patch = await orchestrator.fixer.generate_patch(
+                body.vulnerability,
+                body.original_code,
+                on_thinking=_on_thinking,
+            )
+            
+            fixer_thought = "\n".join(fixer_thinking_parts)
+            if not fixer_thought:
+                fixer_thought = orchestrator.extract_full_thinking(
+                    orchestrator.fixer.last_response,
+                )
+            
+            yield _sse_event("patch", {
+                "patch": patch.model_dump(),
+                "fixer_thought": fixer_thought,
+                "model_used": orchestrator.fixer.active_model,
+            })
+            
+        except Exception as exc:
+            logger.error("Fix generation failed: %s", exc, exc_info=True)
+            yield _sse_event("error", {"message": f"Fix generation failed: {exc}"})
+    
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ── POST /rollback  (Restore from Backup) ───────────────
+
+class RollbackRequest(BaseModel):
+    file_path: str = Field(description="Path to the file to rollback.", min_length=1)
+    repo_root: str = Field(description="Repository root directory.", min_length=1)
+    backup_timestamp: str | None = Field(
+        default=None,
+        description="Specific backup timestamp to restore (defaults to most recent).",
+    )
+    
+    @classmethod
+    def model_validate(cls, obj: dict) -> "RollbackRequest":
+        """Custom validation"""
+        if isinstance(obj, dict):
+            if not obj.get("file_path", "").strip():
+                raise ValueError("file_path cannot be empty")
+            if not obj.get("repo_root", "").strip():
+                raise ValueError("repo_root cannot be empty")
+        return super().model_validate(obj)
+
+@router.post("/rollback")
+async def rollback_file(request: RollbackRequest):
+    """Restore a file from its most recent .sentinel-g3/backups/ backup."""
+    repo_root = Path(request.repo_root).resolve()
+    _validate_local_path(repo_root)
+    
+    backup_dir = repo_root / ".sentinel-g3" / "backups"
+    if not backup_dir.exists():
+        raise HTTPException(status_code=404, detail="No backups found for this repository.")
+    
+    target_file = repo_root / request.file_path
+    
+    # Find matching backups
+    relative_path = Path(request.file_path)
+    backup_pattern = backup_dir / f"{relative_path}.bak.*"
+    backups = sorted(backup_dir.rglob(f"{relative_path}.bak.*"), reverse=True)
+    
+    if not backups:
+        raise HTTPException(status_code=404, detail=f"No backup found for {request.file_path}")
+    
+    # Use specified timestamp or most recent
+    selected_backup = None
+    if request.backup_timestamp:
+        for backup in backups:
+            if backup.suffix.lstrip(".") == request.backup_timestamp:
+                selected_backup = backup
+                break
+        if not selected_backup:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Backup with timestamp {request.backup_timestamp} not found.",
+            )
+    else:
+        selected_backup = backups[0]
+    
+    # Restore the backup
+    try:
+        shutil.copy2(selected_backup, target_file)
+        logger.info("Restored %s from %s", target_file, selected_backup)
+        return {
+            "success": True,
+            "message": f"Restored {request.file_path} from backup {selected_backup.suffix.lstrip('.')}",
+            "backup_used": str(selected_backup),
+        }
+    except Exception as exc:
+        logger.error("Rollback failed for %s: %s", request.file_path, exc)
+        raise HTTPException(status_code=500, detail=f"Rollback failed: {exc}")
 
 
 # ── POST /apply  (Incremental Healing) ──────────────────
@@ -328,7 +510,8 @@ async def apply_batch(request: ApplyBatchRequest):
 
 
 @router.post("/scan")
-async def run_scan(request: ScanRequest):
+@limiter.limit("3/minute")
+async def run_scan(request: Request, body: ScanRequest):
     """Trigger a full self-healing cycle and stream progress via SSE.
 
     Accepts either a local ``directory`` or a remote ``repo_url``.
@@ -344,16 +527,16 @@ async def run_scan(request: ScanRequest):
       - `error`   : if something goes wrong
     """
     # ── Resolve scan target ──────────────────────────────
-    is_remote = bool(request.repo_url and request.repo_url.strip())
-    want_pr = request.create_pr and bool(request.github_token)
+    is_remote = bool(body.repo_url and body.repo_url.strip())
+    want_pr = body.create_pr and bool(body.github_token)
     tmp_dir: Path | None = None
 
     if is_remote:
         try:
-            clone_url = _validate_repo_url(request.repo_url)
+            clone_url = _validate_repo_url(body.repo_url)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        if request.create_pr and not request.github_token:
+        if body.create_pr and not body.github_token:
             raise HTTPException(
                 status_code=400,
                 detail="A GitHub token is required to create a Pull Request.",
@@ -361,12 +544,13 @@ async def run_scan(request: ScanRequest):
         # We'll clone inside the stream so the user sees progress
         root = None  # set during stream
     else:
-        if not request.directory:
+        if not body.directory:
             raise HTTPException(
                 status_code=400,
                 detail="Provide either 'directory' or 'repo_url'.",
             )
-        root = Path(request.directory).resolve()
+        root = Path(body.directory).resolve()
+        _validate_local_path(root)
         if not root.is_dir():
             raise HTTPException(status_code=400, detail=f"Directory not found: {root}")
         clone_url = ""
@@ -374,7 +558,7 @@ async def run_scan(request: ScanRequest):
     async def _stream() -> AsyncGenerator[str, None]:
         nonlocal root, tmp_dir
         run_id = uuid.uuid4().hex[:12]
-        auto_apply = request.auto_apply
+        auto_apply = body.auto_apply
 
         # ── Clone if remote ──────────────────────────────
         if is_remote:
@@ -387,7 +571,7 @@ async def run_scan(request: ScanRequest):
                 if want_pr:
                     # Full clone with auth (needed for branch + push)
                     auth_url = _make_auth_clone_url(
-                        clone_url, request.github_token,
+                        clone_url, body.github_token,
                     )
                     await _clone_repo_full(auth_url, clone_dest)
                 else:
@@ -659,7 +843,7 @@ async def run_scan(request: ScanRequest):
                 pr_data = await _create_github_pr(
                     owner=owner,
                     repo=repo_name,
-                    token=request.github_token,
+                    token=body.github_token,
                     branch=branch_name,
                     base=default_branch,
                     title=f"fix: auto-heal {healed_count} security vulnerabilities [Sentinel-G3]",

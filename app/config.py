@@ -29,6 +29,11 @@ class Settings:
     # Fallback model — Pro for deeper reasoning if Flash quota exhausted
     GEMINI_FALLBACK_MODEL: str = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3-pro-preview")
 
+    # Path traversal guard: semicolon-separated list of allowed scan roots
+    # Example: "C:\Users\Me\Projects;D:\Work\Repos"
+    # If empty, all local paths are allowed (use with caution)
+    ALLOWED_SCAN_ROOTS: str = os.getenv("ALLOWED_SCAN_ROOTS", "")
+
     @classmethod
     def validate(cls) -> None:
         """Raise early if critical config is missing."""

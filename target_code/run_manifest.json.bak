@@ -1,0 +1,17 @@
+{
+  "sentinel_g3_version": "0.2.0",
+  "run_id": "260327-726018",
+  "timestamp": "2026-03-27T17:58:00.506438+00:00",
+  "repository": "target_code",
+  "summary": {
+    "run_id": "260327-726018",
+    "repository_path": "target_code",
+    "scanned_files": 2,
+    "risky_files": 1,
+    "vulnerabilities_found": 0,
+    "vulnerabilities_healed": 0,
+    "cost_reduction_pct": 50.0,
+    "status": "awaiting_review",
+    "entries": []
+  }
+}
