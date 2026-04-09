@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState, useMemo } from "react";
+import { useSession, signOut } from "next-auth/react";
 import {
   Shield,
   FolderOpen,
@@ -14,6 +15,8 @@ import {
   X,
   Loader2,
   Settings,
+  LogOut,
+  User,
 } from "lucide-react";
 import { ScanButton } from "@/components/scan-button";
 import { LiveFeed } from "@/components/live-feed";
@@ -326,6 +329,7 @@ function AutoApplyModal({ onConfirm, onCancel }: { onConfirm: () => void; onCanc
 }
 
 export default function Dashboard() {
+  const { data: session, status } = useSession();
   const [scanning, setScanning]     = useState(false);
   const [logs, setLogs]             = useState<string[]>([]);
   const [entries, setEntries]       = useState<HealingEntry[]>([]);
@@ -609,6 +613,37 @@ export default function Dashboard() {
               <Settings className="h-4 w-4" />
               New Scan
             </button>
+            
+            {/* User Menu */}
+            {session?.user && (
+              <div className="relative group">
+                <button className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--color-border)] hover:bg-[var(--color-bg-secondary)] transition-colors">
+                  {session.user.image ? (
+                    <img src={session.user.image} alt={session.user.name || ''} className="h-6 w-6 rounded-full" />
+                  ) : (
+                    <User className="h-4 w-4 text-[var(--color-text-muted)]" />
+                  )}
+                  <span className="text-xs text-[var(--color-text-secondary)] hidden sm:inline">
+                    {session.user.name || session.user.email}
+                  </span>
+                </button>
+                
+                {/* Dropdown */}
+                <div className="absolute right-0 mt-2 w-48 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-card)] shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all">
+                  <div className="p-3 border-b border-[var(--color-border)]">
+                    <p className="text-xs font-semibold text-[var(--color-text-primary)]">{session.user.name}</p>
+                    <p className="text-[10px] text-[var(--color-text-muted)] mt-0.5">{session.user.email}</p>
+                  </div>
+                  <button
+                    onClick={() => signOut()}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[var(--color-red)] hover:bg-[var(--color-bg-secondary)] transition-colors"
+                  >
+                    <LogOut className="h-3 w-3" />
+                    Sign Out
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </header>

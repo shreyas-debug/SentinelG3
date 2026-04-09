@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { Providers } from "@/components/providers";
 
 export const metadata: Metadata = {
   title: "Sentinel-G3 — Security War Room",
@@ -32,9 +33,11 @@ export default function RootLayout({
         <meta name="theme-color" content="#0a0e14" />
       </head>
       <body className="min-h-screen antialiased">
-        <ErrorBoundary>
-          {children}
-        </ErrorBoundary>
+        <Providers>
+          <ErrorBoundary>
+            {children}
+          </ErrorBoundary>
+        </Providers>
       </body>
     </html>
   );
