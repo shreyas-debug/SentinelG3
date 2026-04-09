@@ -20,7 +20,7 @@ from typing import AsyncGenerator
 from urllib.parse import urlparse
 
 import aiohttp
-from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File
+from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter
@@ -988,8 +988,9 @@ async def get_history(directory: str = Query(..., description="Repo root path"))
 # ── POST /scan/upload (ZIP Upload for Local Repos) ──────
 
 @router.post("/scan/upload")
-@limiter.limit("2/hour")
-async def scan_uploaded_zip(req: Request, file: UploadFile):
+async def scan_uploaded_zip(
+    file: UploadFile = File(...),
+):
     """
     Scan a ZIP file containing a local repository.
     
