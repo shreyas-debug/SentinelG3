@@ -325,3 +325,73 @@ export function startScan(
 
   return controller;
 }
+
+/**
+ * Upload and scan a ZIP file containing a local repository.
+ * Returns an AbortController so the caller can cancel.
+ */
+export function startZipScan(
+  file: File,
+  onEvent: (event: SSEEvent) => void,
+  onDone: () => void,
+): AbortController {
+  const controller = new AbortController();
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  fetch(`${API_BASE}/scan/upload`, {
+    method: "POST",
+    body: formData,
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok || !res.body) {
+        const errorText = await res.text().catch(() => "");
+        const errorMsg = errorText || `HTTP ${res.status}`;
+        onEvent({ type: "error", data: { message: errorMsg } });
+        onDone();
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let currentEvent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("event:")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data:")) {
+            try {
+              const data = JSON.parse(line.slice(5).trim());
+              if (currentEvent) {
+                onEvent({ type: currentEvent, data } as SSEEvent);
+              }
+            } catch (e) {
+              console.error("Failed to parse SSE data:", e);
+            }
+            currentEvent = "";
+          }
+        }
+      }
+
+      onDone();
+    })
+    .catch((err) => {
+      if (err.name !== "AbortError") {
+        onEvent({ type: "error", data: { message: String(err) } });
+      }
+      onDone();
+    });
+
+  return controller;
+}

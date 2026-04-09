@@ -20,7 +20,7 @@ from typing import AsyncGenerator
 from urllib.parse import urlparse
 
 import aiohttp
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter
@@ -983,6 +983,227 @@ async def get_history(directory: str = Query(..., description="Repo root path"))
         return data
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read manifest: {exc}")
+
+
+# ── POST /scan/upload (ZIP Upload for Local Repos) ──────
+
+@router.post("/scan/upload")
+@limiter.limit("2/hour")
+async def scan_uploaded_zip(req: Request, file: UploadFile = File(...)):
+    """
+    Scan a ZIP file containing a local repository.
+    
+    Stricter rate limit (2/hour) due to file processing overhead.
+    Max file size: 50MB
+    """
+    # Validate file type
+    if not file.filename or not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="Only .zip files are supported")
+    
+    # Check file size
+    contents = await file.read()
+    file_size = len(contents)
+    max_size = 50 * 1024 * 1024  # 50MB
+    
+    if file_size > max_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large ({file_size / 1024 / 1024:.1f}MB). Maximum: 50MB"
+        )
+    
+    await file.seek(0)  # Reset file pointer
+    
+    async def _stream() -> AsyncGenerator[str, None]:
+        import zipfile
+        import io
+        
+        run_id = uuid.uuid4().hex[:12]
+        tmp_dir: Path | None = None
+        
+        try:
+            # Create temp directory and extract ZIP
+            yield _sse_event("log", {
+                "message": f"[{run_id}] Processing uploaded ZIP ({file_size / 1024 / 1024:.1f}MB)..."
+            })
+            
+            tmp_dir = Path(tempfile.mkdtemp(prefix="sentinel_upload_"))
+            zip_data = io.BytesIO(contents)
+            
+            with zipfile.ZipFile(zip_data, 'r') as zip_ref:
+                zip_ref.extractall(tmp_dir)
+            
+            yield _sse_event("log", {
+                "message": f"  ✓ ZIP extracted to temp directory"
+            })
+            
+            # Find the actual code directory (skip any wrapper folders)
+            code_root = tmp_dir
+            subdirs = list(tmp_dir.iterdir())
+            if len(subdirs) == 1 and subdirs[0].is_dir():
+                code_root = subdirs[0]
+            
+            yield _sse_event("log", {
+                "message": f"[{run_id}] Scanning {code_root}..."
+            })
+            
+            # Run the scan (audit-only, no auto-apply for uploads)
+            orchestrator = SentinelOrchestrator()
+            
+            # Stage 1: Audit
+            yield _sse_event("log", {"message": "▶ Stage 1 — Auditing uploaded repository…"})
+            
+            try:
+                audit_result = await orchestrator.auditor.analyze_repository(str(code_root))
+            except Exception as exc:
+                yield _sse_event("error", {"message": f"Audit failed: {exc}"})
+                return
+            
+            auditor_thought = orchestrator.auditor.accumulated_thinking
+            if not auditor_thought:
+                auditor_thought = orchestrator.extract_full_thinking(
+                    orchestrator.auditor.last_response,
+                )
+            
+            yield _sse_event("log", {
+                "message": f"  Found {len(audit_result.vulnerabilities)} vulnerability(ies) "
+                           f"across {audit_result.scanned_files} file(s)."
+            })
+            
+            for vuln in audit_result.vulnerabilities:
+                yield _sse_event("vuln", vuln.model_dump())
+            
+            if not audit_result.vulnerabilities:
+                yield _sse_event("summary", HealingCycleSummary(
+                    run_id=run_id,
+                    repository_path=str(code_root),
+                    scanned_files=audit_result.scanned_files,
+                    vulnerabilities_found=0,
+                    vulnerabilities_healed=0,
+                    entries=[],
+                ).model_dump())
+                return
+            
+            # Stage 2: Generate Fixes (but don't apply to uploaded files)
+            yield _sse_event("log", {"message": "▶ Stage 2 — Generating patch recommendations…"})
+            yield _sse_event("log", {
+                "message": "  ℹ Fixes generated for review only (not applied to uploaded files)"
+            })
+            
+            entries = []
+            
+            for idx, vuln in enumerate(audit_result.vulnerabilities):
+                if idx > 0:
+                    await asyncio.sleep(1)
+                
+                yield _sse_event("log", {
+                    "message": f"  [{idx+1}/{len(audit_result.vulnerabilities)}] "
+                               f"Analyzing {vuln.file_path}:{vuln.line_number} ({vuln.severity})"
+                })
+                
+                # Read file
+                file_abs = code_root / vuln.file_path
+                if not file_abs.exists():
+                    entry = {
+                        "vulnerability": vuln.model_dump(),
+                        "patch": None,
+                        "healed": False,
+                        "auditor_thought": auditor_thought[:500],
+                    }
+                    entries.append(entry)
+                    yield _sse_event("patch", entry)
+                    continue
+                
+                original_code = file_abs.read_text(encoding="utf-8", errors="replace")
+                
+                # Generate fix
+                try:
+                    patch_result = await orchestrator.fixer.generate_patch(
+                        vuln, original_code, repo_root=str(code_root),
+                    )
+                    
+                    fixer_thought = orchestrator.fixer.accumulated_thinking
+                    if not fixer_thought:
+                        fixer_thought = orchestrator.extract_full_thinking(
+                            orchestrator.fixer.last_response,
+                        )
+                    
+                    entry = {
+                        "vulnerability": vuln.model_dump(),
+                        "patch": patch_result.model_dump(),
+                        "healed": False,  # Not actually applied for uploads
+                        "auditor_thought": auditor_thought[:500],
+                        "fixer_thought": fixer_thought[:500],
+                    }
+                    entries.append(entry)
+                    yield _sse_event("patch", entry)
+                    
+                except Exception as exc:
+                    logger.error("Patch generation failed: %s", exc, exc_info=True)
+                    entry = {
+                        "vulnerability": vuln.model_dump(),
+                        "patch": None,
+                        "healed": False,
+                        "auditor_thought": auditor_thought[:500],
+                    }
+                    entries.append(entry)
+                    yield _sse_event("patch", entry)
+            
+            # Summary
+            summary = HealingCycleSummary(
+                run_id=run_id,
+                repository_path=str(code_root),
+                scanned_files=audit_result.scanned_files,
+                vulnerabilities_found=len(audit_result.vulnerabilities),
+                vulnerabilities_healed=0,  # No auto-apply for uploads
+                entries=[],
+            )
+            
+            yield _sse_event("summary", {
+                **summary.model_dump(),
+                "entries": entries,
+            })
+            
+            yield _sse_event("log", {
+                "message": f"═══ Upload scan {run_id} complete — "
+                           f"{len(audit_result.vulnerabilities)} found, 0 applied ═══"
+            })
+            
+            # Info message about manual application
+            yield _sse_event("no_pr_info", {
+                "message": "Fixes generated for review only",
+                "reason": "upload_scan",
+                "instructions": [
+                    "Review each fix in the 'Healing History' section",
+                    "Copy the fixed code manually to your local repository",
+                    "Or re-scan via GitHub URL with a token to create a PR automatically",
+                    "ZIP uploads are for preview only and don't modify your files"
+                ],
+                "healed_count": len(audit_result.vulnerabilities)
+            })
+            
+        except zipfile.BadZipFile:
+            yield _sse_event("error", {"message": "Invalid ZIP file format"})
+        except Exception as exc:
+            logger.error("Upload scan failed: %s", exc, exc_info=True)
+            yield _sse_event("error", {"message": f"Upload scan failed: {exc}"})
+        finally:
+            # Cleanup temp directory
+            if tmp_dir and tmp_dir.exists():
+                try:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    yield _sse_event("log", {"message": "  Cleaned up temporary files."})
+                except Exception:
+                    pass
+    
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ── Legacy endpoints ────────────────────────────────────

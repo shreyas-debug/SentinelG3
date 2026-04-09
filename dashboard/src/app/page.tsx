@@ -25,10 +25,10 @@ import { StatsBar } from "@/components/stats-bar";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { StatusBadge } from "@/components/status-badge";
 import { VulnerabilityFilters, type SeverityFilter } from "@/components/vulnerability-filters";
-import { startScan, generateReport, applyBatchPatches, type HealingEntry, type HealingSummary, type PRResult, type SSEEvent, type PatchResult } from "@/lib/api";
+import { startScan, startZipScan, generateReport, applyBatchPatches, type HealingEntry, type HealingSummary, type PRResult, type SSEEvent, type PatchResult } from "@/lib/api";
 
 const DEFAULT_LOCAL = "E:\\Personal\\SentinelG3\\target_code";
-type ScanMode = "local" | "github";
+type ScanMode = "local" | "github" | "upload";
 const FIXING_RE = /\[(\d+)\/(\d+)\]\s+Fixing\s+(.+?):(\d+)\s+\((\w+)\)/;
 
 /* ── Settings Panel (Slide-out) ──────────────────────── */
@@ -47,6 +47,8 @@ function SettingsPanel({
   setCreatePr,
   autoApply,
   setAutoApply,
+  uploadedFile,
+  setUploadedFile,
   scanning,
   onScan,
 }: {
@@ -64,6 +66,8 @@ function SettingsPanel({
   setCreatePr: (create: boolean) => void;
   autoApply: boolean;
   setAutoApply: (apply: boolean) => void;
+  uploadedFile: File | null;
+  setUploadedFile: (file: File | null) => void;
   scanning: boolean;
   onScan: () => void;
 }) {
@@ -125,7 +129,22 @@ function SettingsPanel({
                   aria-label="Scan GitHub repository"
                 >
                   <Github className="h-4 w-4" aria-hidden="true" />
-                  GitHub Repo
+                  GitHub
+                </button>
+                <button
+                  onClick={() => setScanMode("upload")}
+                  disabled={scanning}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold transition-all ${
+                    scanMode === "upload"
+                      ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40"
+                      : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border-2 border-[var(--color-border)]"
+                  }`}
+                  role="radio"
+                  aria-checked={scanMode === "upload"}
+                  aria-label="Upload ZIP file"
+                >
+                  <FileDown className="h-4 w-4" aria-hidden="true" />
+                  Upload ZIP
                 </button>
                 <button
                   onClick={() => setScanMode("local")}
@@ -140,18 +159,41 @@ function SettingsPanel({
                   aria-label="Scan local directory"
                 >
                   <FolderOpen className="h-4 w-4" aria-hidden="true" />
-                  Local Directory
+                  Local
                 </button>
               </div>
             ) : (
-              <div className="space-y-3">
-                <div className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40">
+              <div className="flex gap-2" role="radiogroup" aria-label="Scan target type">
+                <button
+                  onClick={() => setScanMode("github")}
+                  disabled={scanning}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold transition-all ${
+                    scanMode === "github"
+                      ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40"
+                      : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border-2 border-[var(--color-border)]"
+                  }`}
+                  role="radio"
+                  aria-checked={scanMode === "github"}
+                  aria-label="Scan GitHub repository"
+                >
                   <Github className="h-4 w-4" aria-hidden="true" />
-                  GitHub Repository Scanning
-                </div>
-                <p className="text-[11px] text-[var(--color-text-muted)] text-center">
-                  Local directory scanning is only available in development mode
-                </p>
+                  GitHub Repo
+                </button>
+                <button
+                  onClick={() => setScanMode("upload")}
+                  disabled={scanning}
+                  className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-[13px] font-semibold transition-all ${
+                    scanMode === "upload"
+                      ? "bg-[var(--color-emerald)]/20 text-[var(--color-emerald)] border-2 border-[var(--color-emerald)]/40"
+                      : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] border-2 border-[var(--color-border)]"
+                  }`}
+                  role="radio"
+                  aria-checked={scanMode === "upload"}
+                  aria-label="Upload ZIP file"
+                >
+                  <FileDown className="h-4 w-4" aria-hidden="true" />
+                  Upload ZIP
+                </button>
               </div>
             )}
           </div>
@@ -208,6 +250,38 @@ function SettingsPanel({
                   Create Pull Request after scan
                 </span>
               </label>
+            </div>
+          ) : scanMode === "upload" ? (
+            <div className="space-y-4">
+              <div>
+                <label htmlFor="zip-file" className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2 block">
+                  Upload Repository ZIP
+                </label>
+                <div className="relative">
+                  <input
+                    id="zip-file"
+                    type="file"
+                    accept=".zip"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setUploadedFile(file);
+                      }
+                    }}
+                    disabled={scanning}
+                    className="w-full bg-[var(--color-bg-terminal)] border border-[var(--color-border)] rounded-lg px-4 py-3 text-[13px] text-[var(--color-text-secondary)] focus:outline-none focus:border-[var(--color-emerald)] focus:ring-2 focus:ring-[var(--color-emerald)]/20 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-[var(--color-emerald)]/10 file:text-[var(--color-emerald)] hover:file:bg-[var(--color-emerald)]/20"
+                    aria-required="true"
+                  />
+                </div>
+                {uploadedFile && (
+                  <p className="text-[10px] text-[var(--color-emerald)] mt-1 flex items-center gap-1">
+                    ✓ {uploadedFile.name} ({(uploadedFile.size / 1024 / 1024).toFixed(2)}MB)
+                  </p>
+                )}
+                <p className="text-[10px] text-[var(--color-text-muted)] mt-1">
+                  Max size: 50MB. Fixes are generated for review only (not applied to uploaded files)
+                </p>
+              </div>
             </div>
           ) : (
             <div>
@@ -350,6 +424,7 @@ export default function Dashboard() {
   const [isApplyingAll, setIsApplyingAll] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
   const [noTokenWarning, setNoTokenWarning] = useState<{message: string; instructions: string[]} | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
 
   // Filtering state
@@ -357,7 +432,7 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState("");
   const [errorBanner, setErrorBanner] = useState<{message: string; detail: string; retryable: boolean} | null>(null);
 
-  const activeTarget = scanMode === "github" ? repoUrl : targetDir;
+  const activeTarget = scanMode === "github" ? repoUrl : scanMode === "upload" ? (uploadedFile?.name || "") : targetDir;
 
   // Compute severity counts
   const severityCounts = useMemo(() => {
@@ -445,12 +520,91 @@ export default function Dashboard() {
     setPrResult(null);
     setSummary(null);
     setErrorBanner(null);
+    setNoTokenWarning(null);
     setActiveFix(null);
     setLiveThinking("");
     setActiveVulnCode("");
     setActiveFilePath("");
     setPhase("scanning");
 
+    // Handle ZIP upload mode
+    if (scanMode === "upload" && uploadedFile) {
+      controllerRef.current = startZipScan(
+        uploadedFile,
+        (event: SSEEvent) => {
+          switch (event.type) {
+            case "log": {
+              const msg = event.data.message;
+              setLogs((prev) => [...prev, msg]);
+              if (msg.includes("Stage 2") || msg.includes("Generating patches")) setPhase("patching");
+              const match = FIXING_RE.exec(msg);
+              if (match) {
+                const [, idx, total, file, line, severity] = match;
+                setActiveFix(`[${idx}/${total}] ${file}:${line} (${severity})`);
+                setActiveFilePath(`${file}:${line}`);
+                setLiveThinking("");
+              }
+              break;
+            }
+            case "thinking":
+              setLiveThinking((prev) => prev + event.data.text);
+              break;
+            case "vuln":
+              setStats((prev) => ({ ...prev, found: prev.found + 1 }));
+              break;
+            case "patch":
+              setActiveFix(null);
+              setLiveThinking("");
+              setActiveVulnCode("");
+              setActiveFilePath("");
+              setEntries((prev) => [...prev, event.data as HealingEntry]);
+              if ((event.data as HealingEntry).healed) {
+                setStats((prev) => ({ ...prev, healed: prev.healed + 1 }));
+              }
+              break;
+            case "summary":
+              setActiveFix(null);
+              setPhase("complete");
+              setSummary(event.data as HealingSummary);
+              setStats({
+                scannedFiles: event.data.scanned_files,
+                found: event.data.vulnerabilities_found,
+                healed: event.data.vulnerabilities_healed,
+              });
+              if (event.data.entries) setEntries(event.data.entries);
+              break;
+            case "no_pr_info":
+              setNoTokenWarning({
+                message: event.data.message,
+                instructions: event.data.instructions
+              });
+              break;
+            case "error": {
+              const { message, detail, retryable } = event.data as {
+                message: string;
+                detail?: string;
+                retryable?: boolean;
+              };
+              setLogs((prev) => [
+                ...prev,
+                `✗ ERROR: ${message}${detail ? ` — ${detail}` : ""}`,
+              ]);
+              setErrorBanner({ message, detail: detail ?? "", retryable: retryable ?? false });
+              break;
+            }
+          }
+        },
+        () => {
+          setScanning(false);
+          setActiveFix(null);
+          setLiveThinking("");
+          if (phase !== "complete") setPhase("complete");
+        },
+      );
+      return;
+    }
+
+    // Regular scan (GitHub or local directory)
     controllerRef.current = startScan(
       activeTarget,
       (event: SSEEvent) => {
@@ -510,12 +664,10 @@ export default function Dashboard() {
               detail?: string;
               retryable?: boolean;
             };
-            // Push a concise line to the terminal log
             setLogs((prev) => [
               ...prev,
               `✗ ERROR: ${message}${detail ? ` — ${detail}` : ""}`,
             ]);
-            // Also surface as a dismissible banner with full detail
             setErrorBanner({ message, detail: detail ?? "", retryable: retryable ?? false });
             break;
           }
@@ -531,7 +683,7 @@ export default function Dashboard() {
         ? { githubToken, createPr, autoApply }
         : { autoApply },
     );
-  }, [activeTarget, githubToken, createPr, autoApply, scanMode, phase]);
+  }, [activeTarget, uploadedFile, githubToken, createPr, autoApply, scanMode, phase]);
 
   const handleExportReport = async () => {
     const scanSummary = summary ?? {
@@ -564,6 +716,8 @@ export default function Dashboard() {
         setCreatePr={setCreatePr}
         autoApply={autoApply}
         setAutoApply={setAutoApply}
+        uploadedFile={uploadedFile}
+        setUploadedFile={setUploadedFile}
         scanning={scanning}
         onScan={handleScan}
       />
