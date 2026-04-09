@@ -66,10 +66,20 @@ This is not a wrapper around an LLM. It's an **agentic system** where specialise
 
 In a real-world environment, autonomous AI agents need strict guardrails. Sentinel-G3 implements multiple layers of protection:
 
+- **Authentication & Authorization** — GitHub and Google OAuth protect the application from unauthorized access. All routes require authentication, ensuring only legitimate users can trigger security scans.
 - **On-Demand Fix Generation (Incremental Healing)** — By default, the system audits the code but waits for human approval before generating or applying fixes. This saves AI tokens on low-severity issues and ensures absolute human oversight.
 - **Safe Versioned Backups & Rollback** — Before any file is physically modified, a timestamped copy is saved in a dedicated `.sentinel-g3/backups/` directory (preventing loose backup files from unexpectedly exposing secrets to the web root). Applied fixes can be instantly reverted in the UI.
-- **Strict API Rate Limiting** — Expensive LLM endpoints (`/scan`, `/fix`) are heavily rate-limited per IP using `slowapi` to prevent token exhaustion or denial-of-wallet attacks.
+- **Strict API Rate Limiting** — Expensive LLM endpoints (`/scan`, `/fix`) are heavily rate-limited per IP using `slowapi` to prevent token exhaustion or denial-of-wallet attacks:
+  - `/scan`: 3 requests/minute
+  - `/fix`: 5 requests/minute
+  - `/scan/upload`: 2 requests/hour (stricter due to file processing overhead)
 - **Path Traversal Protection** — Local directory scans lock inputs against strict `ALLOWED_SCAN_ROOTS` settings to prevent an attacker from auditing arbitrary server files (like `/etc/passwd`).
+- **ZIP Upload Safety** — Uploaded repositories are:
+  - Limited to 50MB to prevent resource exhaustion
+  - Scanned in isolated temporary directories
+  - Never permanently stored on the server
+  - Cleaned up automatically after processing
+  - Generate fixes in review-only mode (not applied to uploaded files)
 
 ---
 
@@ -172,6 +182,26 @@ for part in response.candidates[0].content.parts:
 
 ## Getting Started
 
+### 🚀 Quick Start (Deployed Version)
+
+**Live Demo:** [https://sentinel-g3.vercel.app](https://sentinel-g3.vercel.app)
+
+The easiest way to try Sentinel-G3:
+
+1. **Sign in** with GitHub or Google OAuth
+2. Choose your scan method:
+   - **GitHub Repository** — Scan any public repo (provide a GitHub token to create PRs)
+   - **Upload ZIP** — Upload a local repository (max 50MB) for scanning
+
+Rate limits apply to protect API resources:
+- **Scans:** 3/minute
+- **ZIP Uploads:** 2/hour
+- **Fix Generation:** 5/minute
+
+### 🛠️ Local Development Setup
+
+For local directory scanning or development:
+
 ### 1. Clone & Install
 
 ```bash
@@ -217,13 +247,25 @@ The API will be live at **http://127.0.0.1:8000** (interactive docs at `/docs`).
 
 ```bash
 cd dashboard
+
+# Copy environment template
+copy .env.local.template .env.local  # Windows
+# cp .env.local.template .env.local  # macOS / Linux
+
+# Configure OAuth (optional for local development)
+# Edit .env.local and add:
+# - NEXTAUTH_SECRET (random 32-char string)
+# - GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET
+# - GITHUB_CLIENT_ID & GITHUB_CLIENT_SECRET
+
 npm install
 npm run dev
 ```
 
-Open **http://localhost:3000**. You can scan either:
-- **Local directory**: Enter a path (e.g. `test_lab/`)
-- **GitHub repository**: Paste a repo URL (e.g. `https://github.com/user/repo`) and optionally provide a GitHub token to create a Pull Request with fixes
+Open **http://localhost:3000**. You can scan:
+- **GitHub repository**: Paste a repo URL and optionally provide a GitHub token to create a Pull Request with fixes
+- **Upload ZIP**: Upload a local repository as a ZIP file (works on deployed version too!)
+- **Local directory** (dev mode only): Enter a path (e.g. `test_lab/`)
 
 Then hit **Run Security Scan**.
 
@@ -255,6 +297,8 @@ Pristine originals are preserved in `test_lab_golden/` and auto-restored before 
 
 The Next.js 15 dashboard connects to the backend via **Server-Sent Events** for live streaming:
 
+- **Authentication** — Secure login with GitHub or Google OAuth
+- **User Profile** — Session management with profile display and logout
 - **Live Feed** — terminal-style log output as the orchestrator progresses
 - **Healing History** — expandable table with severity badges and status
 - **Chain of Thought** — side-by-side Auditor and Fixer reasoning panels
@@ -262,7 +306,12 @@ The Next.js 15 dashboard connects to the backend via **Server-Sent Events** for 
 - **Granular Controls** — per-issue "Generate Fix", "Apply", and "Rollback" buttons
 - **Vulnerability Filters** — filter by Severity Pills (Critical, High, Medium, Low) and search string
 - **Settings Panel** — a slide-out configuration sidebar for scan modes, repository URLs, and credentials
+- **Multiple Scan Modes**:
+  - **GitHub Repository Scanning** — Scan any public repo with optional PR creation
+  - **ZIP Upload** — Upload local repositories (works on deployed version!)
+  - **Local Directory** — Direct path scanning (development mode only)
 - **Thinking Animation** — pulsing progress bars while Gemini reasons
+- **Fully Responsive** — Mobile-friendly design with container queries and breakpoints
 - **Dark "War Room" Aesthetic** — emerald for healed, amber for threats, red for critical
 
 ---
@@ -324,11 +373,17 @@ SentinelG3/
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/scan` | Start a security audit (Audit-only by default) — returns SSE stream |
+| `POST` | `/api/v1/scan/upload` | Upload and scan a ZIP file containing a local repository (max 50MB, review-only mode) — returns SSE stream |
 | `POST` | `/api/v1/fix` | Generate a patch for a specific vulnerability on-demand — returns SSE stream |
 | `POST` | `/api/v1/apply`| Write approved patches to disk or create a GitHub Pull Request |
 | `POST` | `/api/v1/rollback`| Instantly restore a file from its most recent safe backup |
 | `GET` | `/api/v1/history` | Retrieve the latest `run_manifest.json` reporting data |
 | `GET` | `/health` | Service health check |
+
+**Rate Limits:**
+- `/scan`: 3/minute
+- `/scan/upload`: 2/hour
+- `/fix`: 5/minute
 
 ---
 
@@ -366,12 +421,16 @@ The repository is **public** and contains the complete source code, including:
 
 ### Key Features Demonstrated
 
+- ✅ **Authentication & Authorization** — Secure access with GitHub/Google OAuth
 - ✅ **Autonomous Security Auditing** — Finds vulnerabilities using deep reasoning
 - ✅ **Self-Healing** — Generates and applies security patches automatically
 - ✅ **Real-Time Chain-of-Thought** — Streams AI reasoning live to the dashboard
 - ✅ **Cryptographic Proof** — Thought signatures provide verifiable audit trail
 - ✅ **GitHub Integration** — Can scan GitHub repositories, apply patches, and automatically create Pull Requests with fixes
+- ✅ **ZIP Upload Support** — Upload local repositories for scanning (works on deployed version!)
 - ✅ **Transparent Decision-Making** — Every fix includes full reasoning and code diffs
+- ✅ **Rate Limiting & Security** — Production-ready API protection
+- ✅ **Fully Responsive** — Mobile-friendly dashboard with modern UX
 
 ---
 
