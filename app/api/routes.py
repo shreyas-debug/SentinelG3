@@ -989,7 +989,7 @@ async def get_history(directory: str = Query(..., description="Repo root path"))
 
 @router.post("/scan/upload")
 @limiter.limit("2/hour")
-async def scan_uploaded_zip(req: Request, file: UploadFile = File(...)):
+async def scan_uploaded_zip(req: Request, file: UploadFile):
     """
     Scan a ZIP file containing a local repository.
     
