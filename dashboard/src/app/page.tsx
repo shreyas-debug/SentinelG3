@@ -351,6 +351,7 @@ export default function Dashboard() {
   // Filtering state
   const [activeSeverity, setActiveSeverity] = useState<SeverityFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [errorBanner, setErrorBanner] = useState<{message: string; detail: string; retryable: boolean} | null>(null);
 
   const activeTarget = scanMode === "github" ? repoUrl : targetDir;
 
@@ -439,6 +440,7 @@ export default function Dashboard() {
     setStats({ scannedFiles: 0, found: 0, healed: 0 });
     setPrResult(null);
     setSummary(null);
+    setErrorBanner(null);
     setActiveFix(null);
     setLiveThinking("");
     setActiveVulnCode("");
@@ -498,9 +500,21 @@ export default function Dashboard() {
               instructions: event.data.instructions
             });
             break;
-          case "error":
-            setLogs((prev) => [...prev, `ERROR: ${event.data.message}`]);
+          case "error": {
+            const { message, detail, retryable } = event.data as {
+              message: string;
+              detail?: string;
+              retryable?: boolean;
+            };
+            // Push a concise line to the terminal log
+            setLogs((prev) => [
+              ...prev,
+              `✗ ERROR: ${message}${detail ? ` — ${detail}` : ""}`,
+            ]);
+            // Also surface as a dismissible banner with full detail
+            setErrorBanner({ message, detail: detail ?? "", retryable: retryable ?? false });
             break;
+          }
         }
       },
       () => {
@@ -646,6 +660,36 @@ export default function Dashboard() {
               onClick={() => setNoTokenWarning(null)}
               className="text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] shrink-0"
               aria-label="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Global Error Banner */}
+        {errorBanner && (
+          <div className="flex items-start gap-3 rounded-xl border border-[var(--color-red)]/40 bg-[var(--color-red)]/5 px-5 py-4 glass print:hidden">
+            <AlertTriangle className="h-5 w-5 text-[var(--color-red)] shrink-0 mt-0.5" />
+            <div className="flex-1 space-y-1">
+              <p className="text-sm font-semibold text-[var(--color-red)]">{errorBanner.message}</p>
+              {errorBanner.detail && (
+                <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed">
+                  {errorBanner.detail}
+                </p>
+              )}
+              {errorBanner.retryable && (
+                <button
+                  onClick={handleScan}
+                  className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-[var(--color-red)]/10 px-3 py-1.5 text-xs font-semibold text-[var(--color-red)] hover:bg-[var(--color-red)]/20 transition-colors"
+                >
+                  <Shield className="h-3.5 w-3.5" /> Retry Scan
+                </button>
+              )}
+            </div>
+            <button
+              onClick={() => setErrorBanner(null)}
+              className="text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] shrink-0"
+              aria-label="Dismiss Error"
             >
               <X className="h-4 w-4" />
             </button>

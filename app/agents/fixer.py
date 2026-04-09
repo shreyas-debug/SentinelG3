@@ -169,7 +169,8 @@ class FixerAgent(BaseAgent):
                 )
 
             except ClientError as exc:
-                if exc.code != 429:
+                # Retry on 429 (rate limit) AND 503 (transient overload).
+                if exc.code not in (429, 503):
                     logger.error(
                         "Gemini call failed for %s: %s",
                         vulnerability.file_path, exc,
@@ -184,10 +185,11 @@ class FixerAgent(BaseAgent):
 
                 last_exc = exc
                 delay = _BASE_DELAY * (2 ** (attempt - 1))
+                status_label = "429 rate-limited" if exc.code == 429 else "503 unavailable"
                 logger.warning(
-                    "429 rate-limited for %s (attempt %d/%d, model=%s). "
+                    "%s for %s (attempt %d/%d, model=%s). "
                     "Retrying in %.1f s …",
-                    vulnerability.file_path, attempt, _MAX_RETRIES,
+                    status_label, vulnerability.file_path, attempt, _MAX_RETRIES,
                     self.active_model, delay,
                 )
                 await asyncio.sleep(delay)

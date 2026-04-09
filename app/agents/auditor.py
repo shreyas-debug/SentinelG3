@@ -223,16 +223,19 @@ class AuditorAgent(BaseAgent):
                 return self._parse_response(response, rel_path)
 
             except ClientError as exc:
-                if exc.code != 429:
+                # Retry on 429 (rate limit) AND 503 (transient overload).
+                # Any other status code is a hard failure — return immediately.
+                if exc.code not in (429, 503):
                     logger.error("Gemini call failed for %s: %s", rel_path, exc)
                     return []
 
                 last_exc = exc
                 delay = self._BASE_DELAY * (2 ** (attempt - 1))  # 2, 4, 8
+                status_label = "429 rate-limited" if exc.code == 429 else "503 unavailable"
                 logger.warning(
-                    "429 rate-limited on %s (attempt %d/%d, model=%s). "
+                    "%s on %s (attempt %d/%d, model=%s). "
                     "Retrying in %.1f s …",
-                    rel_path, attempt, self._MAX_RETRIES,
+                    status_label, rel_path, attempt, self._MAX_RETRIES,
                     self.active_model, delay,
                 )
                 await asyncio.sleep(delay)

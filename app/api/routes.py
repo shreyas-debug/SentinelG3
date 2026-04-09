@@ -273,6 +273,58 @@ def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _friendly_error(exc: Exception) -> dict:
+    """Convert a raw exception into a clean user-facing error payload.
+
+    Returns a dict with:
+      - ``message``  : Short, human-readable headline.
+      - ``detail``   : Actionable guidance for the user.
+      - ``retryable``: True if the error is transient and retrying may help.
+    """
+    msg = str(exc)
+
+    # Gemini 503 — transient overload
+    if "503" in msg or "UNAVAILABLE" in msg:
+        return {
+            "message": "AI Service Temporarily Unavailable",
+            "detail": (
+                "The Gemini AI service is experiencing high demand right now. "
+                "The system already retried automatically. "
+                "Please wait 30-60 seconds and try the scan again."
+            ),
+            "retryable": True,
+        }
+
+    # Gemini 429 — rate limit
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "rate" in msg.lower():
+        return {
+            "message": "AI Rate Limit Reached",
+            "detail": (
+                "Too many requests were sent to the Gemini API in a short period. "
+                "Please wait 1-2 minutes before starting a new scan."
+            ),
+            "retryable": True,
+        }
+
+    # Network / clone failures
+    if "clone" in msg.lower() or "git" in msg.lower():
+        return {
+            "message": "Repository Clone Failed",
+            "detail": (
+                "Could not clone the repository. Check that the URL is correct, "
+                "the repository is public, and your network connection is stable."
+            ),
+            "retryable": False,
+        }
+
+    # Generic fallback — still avoid raw tracebacks
+    return {
+        "message": "An Unexpected Error Occurred",
+        "detail": f"{type(exc).__name__}: {msg[:200]}",
+        "retryable": False,
+    }
+
+
 # ── POST /fix  (On-Demand Fix Generation) ───────────────
 
 class FixRequest(BaseModel):
@@ -602,7 +654,8 @@ async def run_scan(request: Request, body: ScanRequest):
         try:
             audit_result = await orchestrator.auditor.analyze_repository(str(root))
         except Exception as exc:
-            yield _sse_event("error", {"message": f"Audit failed: {exc}"})
+            logger.error("Audit stage failed: %s", exc, exc_info=True)
+            yield _sse_event("error", _friendly_error(exc))
             return
 
         # Capture the auditor's chain-of-thought accumulated across all files
