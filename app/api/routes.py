@@ -1119,7 +1119,7 @@ async def scan_uploaded_zip(
                 # Generate fix
                 try:
                     patch_result = await orchestrator.fixer.generate_patch(
-                        vuln, original_code, repo_root=str(code_root),
+                        vuln, original_code,
                     )
                     
                     fixer_thought = orchestrator.fixer.accumulated_thinking
