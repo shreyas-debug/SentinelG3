@@ -8,6 +8,7 @@ including SSE streaming for real-time dashboard updates.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -15,8 +16,9 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Literal
 from urllib.parse import urlparse
 
 import aiohttp
@@ -34,7 +36,10 @@ from app.models.schemas import (
     AuditResponse,
     Finding,
     HealingCycleSummary,
+    PatchApprovalStatus,
     PatchResult,
+    PatchReviewRequest,
+    PatchReviewResponse,
     PipelineStatusResponse,
     Vulnerability,
 )
@@ -499,16 +504,24 @@ async def apply_batch(request: ApplyBatchRequest):
             await _git(base_dir, "config", "user.email", "bot@sentinel-g3.dev")
             
         # Apply patches
+        applied_files = []
         for patch in request.patches:
             file_abs = base_dir / patch.file_path
             
             # Create backup if local and file exists
             if not is_remote and file_abs.exists():
-                backup = file_abs.with_suffix(file_abs.suffix + ".bak")
+                # Unified backup path: .sentinel-g3/backups/<relative_path>.bak.<timestamp>
+                backup_root = base_dir / ".sentinel-g3" / "backups"
+                backup_root.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+                safe_rel = patch.file_path.replace("/", "_").replace("\\", "_")
+                backup_dest = backup_root / f"{safe_rel}.bak.{timestamp}"
                 original_text = await asyncio.to_thread(file_abs.read_text, "utf-8")
-                await asyncio.to_thread(backup.write_text, original_text, "utf-8")
+                await asyncio.to_thread(backup_dest.write_text, original_text, "utf-8")
                 
             await orchestrator.fixer.apply_patch(str(file_abs), patch.new_content)
+            applied_files.append(str(file_abs.relative_to(base_dir)))
+            logger.info(f"✓ Applied patch to: {patch.file_path}")
             
         # If remote and user authorized PR creation
         if is_remote and request.create_pr and request.github_token:
@@ -550,6 +563,10 @@ async def apply_batch(request: ApplyBatchRequest):
             result["pr_url"] = str(pr_data.get("html_url", ""))
             result["branch"] = str(branch_name)
             result["message"] = str(f"Created PR for {len(request.patches)} patches")
+        else:
+            # For local applies, include the file paths
+            result["message"] = f"Applied {len(request.patches)} patch(es)"
+            result["applied_files"] = applied_files
             
     except Exception as exc:
         logger.error("Failed to apply batch patch to %s: %s", request.target, exc, exc_info=True)
@@ -1252,3 +1269,165 @@ async def get_audit_status(run_id: str):
         stage="not_started",
         message="Pipeline orchestration not yet implemented.",
     )
+
+
+# ── Patch Manifest Helpers ───────────────────────────────
+
+def _find_patch_in_manifest(
+    manifest_data: dict,
+    patch_id: str,
+) -> tuple[dict | None, int, int]:
+    """Locate a patch by patch_id inside all runs of a manifest.
+
+    Returns (patch_dict, run_index, entry_index) or (None, -1, -1).
+    """
+    for run_idx, run in enumerate(manifest_data.get("runs", [])):
+        for entry_idx, entry in enumerate(run.get("entries", [])):
+            patch = entry.get("patch") or {}
+            if patch.get("patch_id") == patch_id:
+                return patch, run_idx, entry_idx
+    return None, -1, -1
+
+
+def _generate_unified_diff(original: str, fixed: str, label: str = "fix") -> str:
+    """Generate a simple unified-diff string from two code strings."""
+    import difflib
+    orig_lines = original.splitlines(keepends=True)
+    fix_lines  = fixed.splitlines(keepends=True)
+    diff = difflib.unified_diff(
+        orig_lines,
+        fix_lines,
+        fromfile=f"a/{label}",
+        tofile=f"b/{label}",
+        lineterm="",
+    )
+    return "".join(diff)
+
+
+# ── GET /patches/{patch_id} ──────────────────────────────
+
+@router.get("/patches/{patch_id}")
+async def get_patch_details(
+    patch_id: str,
+    directory: str = Query(..., description="Repo root that owns this patch"),
+):
+    """Return detailed info about a specific patch, including a unified diff."""
+    manifest_path = Path(directory).resolve() / "run_manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail="No manifest found for this directory.")
+
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read manifest: {exc}")
+
+    patch, run_idx, entry_idx = _find_patch_in_manifest(manifest_data, patch_id)
+    if patch is None:
+        raise HTTPException(status_code=404, detail=f"Patch {patch_id!r} not found.")
+
+    diff = _generate_unified_diff(
+        patch.get("original_code", ""),
+        patch.get("fixed_code", ""),
+        label=patch.get("file_path", "file"),
+    )
+
+    return {
+        "patch_id": patch_id,
+        "status": patch.get("status", PatchApprovalStatus.PENDING),
+        "file_path": patch.get("file_path"),
+        "diff": diff,
+        "risk_score": patch.get("risk_score", 5),
+        "backup_path": patch.get("backup_path"),
+        "can_rollback": bool(patch.get("backup_path") and Path(patch["backup_path"]).exists()),
+        "reviewed_at": patch.get("reviewed_at"),
+    }
+
+
+# ── POST /patches/{patch_id}/approve ────────────────────
+
+@router.post("/patches/{patch_id}/approve", response_model=PatchReviewResponse)
+async def approve_patch(
+    patch_id: str,
+    body: PatchReviewRequest,
+    directory: str = Query(..., description="Repo root that owns this patch"),
+):
+    """Mark a patch as APPROVED for subsequent application."""
+    manifest_path = Path(directory).resolve() / "run_manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail="No manifest found.")
+
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read manifest: {exc}")
+
+    patch, run_idx, entry_idx = _find_patch_in_manifest(manifest_data, patch_id)
+    if patch is None:
+        raise HTTPException(status_code=404, detail=f"Patch {patch_id!r} not found.")
+
+    if patch.get("status") == PatchApprovalStatus.APPLIED:
+        raise HTTPException(status_code=400, detail="Patch is already applied.")
+    if patch.get("status") == PatchApprovalStatus.REJECTED:
+        raise HTTPException(status_code=400, detail="Patch was rejected. Cannot approve a rejected patch.")
+
+    now = datetime.now(tz=timezone.utc).isoformat()
+    patch["status"] = PatchApprovalStatus.APPROVED
+    patch["reviewed_at"] = now
+    manifest_data["runs"][run_idx]["entries"][entry_idx]["patch"] = patch
+
+    try:
+        manifest_path.write_text(json.dumps(manifest_data, indent=2, default=str), encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update manifest: {exc}")
+
+    return PatchReviewResponse(
+        patch_id=patch_id,
+        status=PatchApprovalStatus.APPROVED,
+        message=f"Patch approved. Apply it via POST /apply.",
+        reviewed_at=datetime.fromisoformat(now),
+    )
+
+
+# ── POST /patches/{patch_id}/reject ─────────────────────
+
+@router.post("/patches/{patch_id}/reject", response_model=PatchReviewResponse)
+async def reject_patch(
+    patch_id: str,
+    body: PatchReviewRequest,
+    directory: str = Query(..., description="Repo root that owns this patch"),
+):
+    """Mark a patch as REJECTED. Rejected patches cannot be applied."""
+    manifest_path = Path(directory).resolve() / "run_manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail="No manifest found.")
+
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read manifest: {exc}")
+
+    patch, run_idx, entry_idx = _find_patch_in_manifest(manifest_data, patch_id)
+    if patch is None:
+        raise HTTPException(status_code=404, detail=f"Patch {patch_id!r} not found.")
+
+    if patch.get("status") == PatchApprovalStatus.APPLIED:
+        raise HTTPException(status_code=400, detail="Cannot reject an already-applied patch. Use rollback instead.")
+
+    now = datetime.now(tz=timezone.utc).isoformat()
+    patch["status"] = PatchApprovalStatus.REJECTED
+    patch["reviewed_at"] = now
+    patch["rejection_reason"] = body.rejection_reason or body.comments or "No reason provided."
+    manifest_data["runs"][run_idx]["entries"][entry_idx]["patch"] = patch
+
+    try:
+        manifest_path.write_text(json.dumps(manifest_data, indent=2, default=str), encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update manifest: {exc}")
+
+    return PatchReviewResponse(
+        patch_id=patch_id,
+        status=PatchApprovalStatus.REJECTED,
+        message="Patch rejected and will not be applied.",
+        reviewed_at=datetime.fromisoformat(now),
+    )
+

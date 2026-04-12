@@ -1,20 +1,24 @@
 """
-Sentinel-G3 | Professional HTML Security Report Generator
+Sentinel-G3 | Security Report Generator
 
-POST /api/v1/report
-Accepts a HealingSummary JSON body and returns a complete, print-ready HTML
-document styled for professional security audits.
-No external Python dependencies (pure f-string HTML + inline CSS).
+POST /api/v1/report         → Professional HTML report (print-ready)
+POST /api/v1/report/sarif   → SARIF 2.1.0 (GitHub Advanced Security compatible)
+POST /api/v1/report/json    → Machine-readable JSON summary
+POST /api/v1/report/csv     → Spreadsheet-friendly CSV
 """
 
 from __future__ import annotations
 
+import csv
 import html
+import io
+import json
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -535,3 +539,205 @@ async def generate_report(req: ReportRequest) -> HTMLResponse:
         content=html_content,
         headers={"Content-Disposition": 'inline; filename="sentinel-g3-report.html"'},
     )
+
+
+# ── SARIF 2.1.0 Export ───────────────────────────────────
+
+_SEV_TO_SARIF = {
+    "critical": "error",
+    "high":     "error",
+    "medium":   "warning",
+    "low":      "note",
+    "info":     "none",
+}
+
+
+@router.post("/report/sarif")
+async def generate_sarif_report(req: ReportRequest) -> JSONResponse:
+    """Generate a SARIF 2.1.0 report (GitHub Advanced Security compatible).
+
+    Upload the returned JSON to GitHub Code Scanning to see findings
+    directly inline in pull requests and the Security tab.
+    """
+    now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    rules: list[dict] = []
+    results: list[dict] = []
+    seen_rule_ids: set[str] = set()
+
+    for i, entry in enumerate(req.entries):
+        v = entry.vulnerability
+        sev_lower = v.severity.lower()
+        rule_id = f"SG3-{sev_lower.upper()}-{abs(hash(v.issue)) % 9999:04d}"
+
+        if rule_id not in seen_rule_ids:
+            seen_rule_ids.add(rule_id)
+            rules.append({
+                "id": rule_id,
+                "name": v.issue[:80].replace(" ", ""),
+                "shortDescription": {"text": v.issue[:100]},
+                "fullDescription": {"text": v.issue},
+                "defaultConfiguration": {
+                    "level": _SEV_TO_SARIF.get(sev_lower, "warning"),
+                },
+                "properties": {
+                    "tags": [sev_lower, "security"],
+                    "precision": "high",
+                    "problem.severity": sev_lower,
+                },
+                "help": {
+                    "text": v.fix_suggestion,
+                    "markdown": f"**Remediation:** {v.fix_suggestion}",
+                },
+            })
+
+        results.append({
+            "ruleId": rule_id,
+            "level": _SEV_TO_SARIF.get(sev_lower, "warning"),
+            "message": {
+                "text": v.issue,
+            },
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {
+                        "uri": v.file_path.replace("\\", "/"),
+                        "uriBaseId": "%SRCROOT%",
+                    },
+                    "region": {
+                        "startLine": max(1, v.line_number),
+                    },
+                },
+            }],
+            "properties": {
+                "severity": v.severity,
+                "fix_suggestion": v.fix_suggestion,
+                "eli5": v.eli5_explanation or "",
+            },
+        })
+
+    sarif = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "Sentinel-G3",
+                    "version": "0.1.0",
+                    "informationUri": "https://github.com/sentinel-g3",
+                    "semanticVersion": "0.1.0",
+                    "rules": rules,
+                },
+            },
+            "results": results,
+            "invocations": [{
+                "executionSuccessful": True,
+                "endTimeUtc": now,
+            }],
+            "properties": {
+                "run_id": req.run_id,
+                "scanned_files": req.scanned_files,
+                "repository_path": req.repository_path,
+            },
+        }],
+    }
+
+    sarif_bytes = json.dumps(sarif, indent=2).encode("utf-8")
+
+    return Response(
+        content=sarif_bytes,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": 'attachment; filename="sentinel-g3-results.sarif"',
+            "Content-Type": "application/sarif+json",
+        },
+    )
+
+
+# ── JSON Export ──────────────────────────────────────────
+
+@router.post("/report/json")
+async def generate_json_report(req: ReportRequest) -> Response:
+    """Generate a clean, machine-readable JSON summary report."""
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    payload = {
+        "meta": {
+            "tool": "Sentinel-G3",
+            "version": "0.1.0",
+            "generated_at": now,
+            "run_id": req.run_id,
+        },
+        "summary": {
+            "repository_path": req.repository_path,
+            "scanned_files": req.scanned_files,
+            "vulnerabilities_found": req.vulnerabilities_found,
+            "vulnerabilities_healed": req.vulnerabilities_healed,
+        },
+        "findings": [
+            {
+                "id": f"SG3-{i:03d}",
+                "severity": e.vulnerability.severity,
+                "issue": e.vulnerability.issue,
+                "file_path": e.vulnerability.file_path,
+                "line_number": e.vulnerability.line_number,
+                "fix_suggestion": e.vulnerability.fix_suggestion,
+                "eli5_explanation": e.vulnerability.eli5_explanation,
+                "exploit_poc": e.vulnerability.exploit_poc,
+                "attack_scenario": e.vulnerability.attack_scenario,
+                "patch_status": "healed" if e.healed else ("generated" if e.patch and e.patch.success else "no_fix"),
+                "fixed_code_available": bool(e.patch and e.patch.fixed_code),
+            }
+            for i, e in enumerate(req.entries, 1)
+        ],
+    }
+
+    return Response(
+        content=json.dumps(payload, indent=2),
+        media_type="application/json",
+        headers={'Content-Disposition': 'attachment; filename="sentinel-g3-report.json"'},
+    )
+
+
+# ── CSV Export ───────────────────────────────────────────
+
+@router.post("/report/csv")
+async def generate_csv_report(req: ReportRequest) -> Response:
+    """Generate a spreadsheet-friendly CSV report."""
+    output = io.StringIO()
+    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
+
+    # Header row
+    writer.writerow([
+        "ID", "Severity", "File", "Line", "Issue",
+        "Fix Suggestion", "ELI5", "Patch Status",
+        "Run ID", "Repository",
+    ])
+
+    for i, entry in enumerate(req.entries, 1):
+        v = entry.vulnerability
+        patch_status = (
+            "healed" if entry.healed
+            else "generated" if entry.patch and entry.patch.success
+            else "no_fix"
+        )
+        writer.writerow([
+            f"SG3-{i:03d}",
+            v.severity,
+            v.file_path,
+            v.line_number,
+            v.issue,
+            v.fix_suggestion,
+            v.eli5_explanation or "",
+            patch_status,
+            req.run_id,
+            req.repository_path,
+        ])
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
+
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={'Content-Disposition': 'attachment; filename="sentinel-g3-report.csv"'},
+    )
+

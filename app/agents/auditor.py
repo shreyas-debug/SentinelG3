@@ -18,6 +18,7 @@ from google.genai import types
 from google.genai.errors import ClientError
 
 from app.agents.base import BaseAgent
+from app.config import settings
 from app.models.schemas import AuditResult, Vulnerability
 
 logger = logging.getLogger(__name__)
@@ -113,11 +114,12 @@ class AuditorAgent(BaseAgent):
     # ── Core public method ──────────────────────────────────
 
     async def analyze_repository(self, repo_path: str) -> AuditResult:
-        """Scan all ``.py`` and ``.js`` files under *repo_path*.
+        """Scan all target files under *repo_path* concurrently.
 
-        Files are sent to Gemini 3 Pro concurrently via ``asyncio.gather``.
-        Each file gets its own ``generate_content`` call so individual
-        results stay focused and within context-window limits.
+        Files are scanned in parallel, bounded by a semaphore
+        (``MAX_CONCURRENT_SCANS`` env var, default 3) to stay within
+        rate limits. Each file gets its own ``generate_content`` call
+        so individual results stay focused and within context-window limits.
         """
         root = Path(repo_path).resolve()
         if not root.is_dir():
@@ -127,7 +129,7 @@ class AuditorAgent(BaseAgent):
         files = self._collect_files(root)
 
         if not files:
-            logger.warning("No .py / .js files found in %s", root)
+            logger.warning("No scannable files found in %s", root)
             return AuditResult(
                 vulnerabilities=[],
                 scanned_files=0,
@@ -135,16 +137,26 @@ class AuditorAgent(BaseAgent):
             )
 
         logger.info(
-            "Auditing %d file(s) under %s …", len(files), root,
+            "Auditing %d file(s) under %s (max_concurrent=%d) …",
+            len(files), root, settings.MAX_CONCURRENT_SCANS,
         )
 
-        # 2. Sequential scan with 1 s delay to respect RPM limits ──
-        results: list[list[Vulnerability]] = []
-        for idx, (rel_path, content) in enumerate(files.items()):
-            if idx > 0:
-                await asyncio.sleep(1)          # stay under free-tier RPM
-            vulns = await self._audit_single_file(rel_path, content)
-            results.append(vulns)
+        # 2. Parallel scan with semaphore for rate-limit safety ──
+        semaphore = asyncio.Semaphore(settings.MAX_CONCURRENT_SCANS)
+        file_items = list(files.items())
+
+        async def _scan_with_limit(idx: int, rel_path: str, content: str) -> list[Vulnerability]:
+            async with semaphore:
+                # Small staggered delay between acquisitions to avoid burst
+                if idx > 0:
+                    await asyncio.sleep(0.5 * (idx % settings.MAX_CONCURRENT_SCANS))
+                return await self._audit_single_file(rel_path, content)
+
+        tasks = [
+            _scan_with_limit(idx, rel_path, content)
+            for idx, (rel_path, content) in enumerate(file_items)
+        ]
+        results: list[list[Vulnerability]] = await asyncio.gather(*tasks)
 
         # 3. Flatten & return ────────────────────────────────
         all_vulns: list[Vulnerability] = [

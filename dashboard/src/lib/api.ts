@@ -1,5 +1,11 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
 
+// ── Enums & Constants ──────────────────────────────────
+
+export type PatchApprovalStatus = "pending" | "approved" | "rejected" | "applied";
+
+// ── Core Types ─────────────────────────────────────────
+
 export interface Vulnerability {
   severity: string;
   issue: string;
@@ -12,14 +18,29 @@ export interface Vulnerability {
   exploit_poc?: string;
   /** Step-by-step attacker narrative. */
   attack_scenario?: string;
+  /** AI confidence in this finding (0–1). */
+  confidence_score?: number;
+  /** Estimated false positive likelihood. */
+  false_positive_likelihood?: "low" | "medium" | "high";
 }
 
 export interface PatchResult {
+  patch_id: string;
   file_path: string;
   original_code: string;
   fixed_code: string;
   success: boolean;
   message: string;
+  /** Lifecycle state of this patch. */
+  status?: PatchApprovalStatus;
+  /** Risk score 1–10. */
+  risk_score?: number;
+  /** Backup file path if patch was applied. */
+  backup_path?: string | null;
+  /** Review timestamp. */
+  reviewed_at?: string | null;
+  /** Reason if rejected. */
+  rejection_reason?: string;
 }
 
 export interface HealingEntry {
@@ -65,6 +86,8 @@ export type SSEEvent =
   | { type: "no_pr_info"; data: { message: string; instructions: string[]; reason: string; healed_count: number } }
   | { type: "error"; data: { message: string } };
 
+// ── Helper ─────────────────────────────────────────────
+
 /**
  * Detect whether a target string looks like a remote Git URL.
  */
@@ -93,6 +116,8 @@ export interface ScanOptions {
   autoApply?: boolean;
 }
 
+// ── Patch Operations ───────────────────────────────────
+
 /**
  * Apply a batch of pre-generated patches. (Incremental Healing mode)
  * Handles both local directories and remote GitHub repos.
@@ -101,7 +126,7 @@ export async function applyBatchPatches(
   target: string,
   patches: { file_path: string; new_content: string }[],
   options?: { createPr?: boolean; githubToken?: string }
-): Promise<{ success: boolean; message: string; pr_url?: string }> {
+): Promise<{ success: boolean; message: string; pr_url?: string; applied_files?: string[] }> {
   const body = {
     target,
     patches,
@@ -122,6 +147,56 @@ export async function applyBatchPatches(
 }
 
 /**
+ * Approve a patch by patch_id. Persists to run_manifest.json on the backend.
+ */
+export async function approvePatch(
+  patchId: string,
+  directory: string,
+  comments = ""
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(
+    `${API_BASE}/patches/${encodeURIComponent(patchId)}/approve?directory=${encodeURIComponent(directory)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ comments }),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+    return { success: false, message: err.detail ?? `HTTP ${res.status}` };
+  }
+  const data = await res.json();
+  return { success: true, message: data.message ?? "Approved" };
+}
+
+/**
+ * Reject a patch by patch_id. Persists to run_manifest.json on the backend.
+ */
+export async function rejectPatch(
+  patchId: string,
+  directory: string,
+  rejectionReason = ""
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(
+    `${API_BASE}/patches/${encodeURIComponent(patchId)}/reject?directory=${encodeURIComponent(directory)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rejection_reason: rejectionReason }),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+    return { success: false, message: err.detail ?? `HTTP ${res.status}` };
+  }
+  const data = await res.json();
+  return { success: true, message: data.message ?? "Rejected" };
+}
+
+// ── Report Export ──────────────────────────────────────
+
+/**
  * Generate a professional HTML security report from a completed scan summary.
  * Posts data to the backend /report endpoint, gets back HTML, and returns a
  * Blob URL that can be opened in a new browser tab.
@@ -139,6 +214,92 @@ export async function generateReport(summary: HealingSummary): Promise<string> {
   const blob = new Blob([html], { type: "text/html" });
   return URL.createObjectURL(blob);
 }
+
+/**
+ * Download a SARIF 2.1.0 report (GitHub Advanced Security compatible).
+ */
+export async function downloadSarifReport(summary: HealingSummary): Promise<void> {
+  const res = await fetch(`${API_BASE}/report/sarif`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(summary),
+  });
+  if (!res.ok) throw new Error(`SARIF export failed: HTTP ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "sentinel-g3-results.sarif";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Download a machine-readable JSON report.
+ */
+export async function downloadJsonReport(summary: HealingSummary): Promise<void> {
+  const res = await fetch(`${API_BASE}/report/json`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(summary),
+  });
+  if (!res.ok) throw new Error(`JSON export failed: HTTP ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "sentinel-g3-report.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Download a spreadsheet-friendly CSV report.
+ */
+export async function downloadCsvReport(summary: HealingSummary): Promise<void> {
+  const res = await fetch(`${API_BASE}/report/csv`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(summary),
+  });
+  if (!res.ok) throw new Error(`CSV export failed: HTTP ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "sentinel-g3-report.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Client-side: download a patch diff as a .patch file (no backend needed).
+ */
+export function downloadPatchDiff(
+  originalCode: string,
+  fixedCode: string,
+  filePath: string,
+  patchId: string
+): void {
+  const origLines = originalCode.split("\n");
+  const fixLines  = fixedCode.split("\n");
+  // Simple unified diff (client-side)
+  const header = `--- a/${filePath}\n+++ b/${filePath}\n`;
+  const context = `@@ -1,${origLines.length} +1,${fixLines.length} @@\n`;
+  const removed = origLines.map((l) => `-${l}`).join("\n");
+  const added   = fixLines.map((l) => `+${l}`).join("\n");
+  const diff = `${header}${context}${removed}\n${added}\n`;
+
+  const blob = new Blob([diff], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `sentinel-${patchId.slice(0, 8)}.patch`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Fix Generation ─────────────────────────────────────
 
 /**
  * Generate a security patch for a single vulnerability on-demand.
@@ -217,6 +378,8 @@ export function generateFix(
   return controller;
 }
 
+// ── Rollback ───────────────────────────────────────────
+
 /**
  * Rollback a file to its most recent backup from .sentinel-g3/backups/.
  */
@@ -244,6 +407,8 @@ export async function rollbackFile(
 
   return res.json();
 }
+
+// ── Scan ───────────────────────────────────────────────
 
 /**
  * Start a scan via SSE. Calls `onEvent` for each server-sent event.
@@ -299,7 +464,6 @@ export function startScan(
         // Parse SSE frames
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
-
 
         for (const line of lines) {
           if (line.startsWith("event: ")) {

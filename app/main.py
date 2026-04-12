@@ -38,10 +38,12 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── CORS (allow dashboard dev server) ───────────────────
+# ── CORS (configurable via ALLOWED_ORIGINS env var) ─────
+_origins = settings.get_allowed_origins()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -50,7 +52,6 @@ app.add_middleware(
 # ── Routes ──────────────────────────────────────────────
 app.include_router(api_router,    prefix="/api/v1")
 app.include_router(report_router, prefix="/api/v1")
-
 
 
 # ── Lifecycle Events ────────────────────────────────────

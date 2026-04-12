@@ -17,6 +17,7 @@ import {
   Settings,
   LogOut,
   User,
+  ChevronDown,
 } from "lucide-react";
 import { ScanButton } from "@/components/scan-button";
 import { LiveFeed } from "@/components/live-feed";
@@ -25,7 +26,7 @@ import { StatsBar } from "@/components/stats-bar";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { StatusBadge } from "@/components/status-badge";
 import { VulnerabilityFilters, type SeverityFilter } from "@/components/vulnerability-filters";
-import { startScan, startZipScan, generateReport, applyBatchPatches, type HealingEntry, type HealingSummary, type PRResult, type SSEEvent, type PatchResult } from "@/lib/api";
+import { startScan, startZipScan, generateReport, downloadSarifReport, downloadJsonReport, downloadCsvReport, applyBatchPatches, type HealingEntry, type HealingSummary, type PRResult, type SSEEvent, type PatchResult } from "@/lib/api";
 
 const DEFAULT_LOCAL = "E:\\Personal\\SentinelG3\\target_code";
 type ScanMode = "local" | "github" | "upload";
@@ -425,6 +426,7 @@ export default function Dashboard() {
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
   const [noTokenWarning, setNoTokenWarning] = useState<{message: string; instructions: string[]} | null>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
 
   // Filtering state
@@ -489,6 +491,12 @@ export default function Dashboard() {
       if (result.pr_url) {
         setPrResult({ url: result.pr_url, number: parseInt(result.pr_url.split("/").pop() || "0", 10), branch: result.pr_url });
         pushLog(`  ✓ Created Pull Request: ${result.pr_url}`);
+      } else if (result.applied_files && Array.isArray(result.applied_files)) {
+        pushLog(`  📁 Files modified:`);
+        result.applied_files.forEach((file: string) => {
+          pushLog(`     ✓ ${file}`);
+        });
+        pushLog(`  💾 Backups saved to: .sentinel-g3/backups/`);
       }
       setEntries((prev) =>
         prev.map((entry) => {
@@ -751,21 +759,70 @@ export default function Dashboard() {
 
           {/* Right: Action buttons */}
           <div className="flex items-center gap-3">
-            {phase === "complete" && entries.length > 0 && (
-              <button
-                onClick={handleExportReport}
-                className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-cyan)] bg-[var(--color-cyan)]/10 hover:bg-[var(--color-cyan)]/20 px-4 py-2 text-[12px] font-bold text-[var(--color-cyan)] transition-all active:scale-95"
-              >
-                <FileDown className="h-4 w-4" />
-                Export Report
-              </button>
+            {phase === "complete" && entries.length > 0 && summary && (
+              <div className="relative">
+                <button
+                  onClick={() => setExportMenuOpen((o) => !o)}
+                  className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-cyan)] bg-[var(--color-cyan)]/10 hover:bg-[var(--color-cyan)]/20 px-4 py-2 text-[12px] font-bold text-[var(--color-cyan)] transition-all active:scale-95"
+                >
+                  <FileDown className="h-4 w-4" />
+                  Export
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                {exportMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 w-44 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-card)] shadow-2xl z-20 overflow-hidden">
+                    {[
+                      { label: "HTML Report",   action: () => { handleExportReport(); setExportMenuOpen(false); } },
+                      { label: "SARIF (.sarif)", action: async () => { setExportMenuOpen(false); try { await downloadSarifReport(summary); } catch { setLogs((p) => [...p, "✗ SARIF export failed"]); } } },
+                      { label: "JSON Report",   action: async () => { setExportMenuOpen(false); try { await downloadJsonReport(summary); } catch { setLogs((p) => [...p, "✗ JSON export failed"]); } } },
+                      { label: "CSV Report",    action: async () => { setExportMenuOpen(false); try { await downloadCsvReport(summary); } catch { setLogs((p) => [...p, "✗ CSV export failed"]); } } },
+                    ].map(({ label, action }) => (
+                      <button
+                        key={label}
+                        onClick={action}
+                        className="w-full text-left px-4 py-2.5 text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-secondary)] hover:text-[var(--color-text-primary)] transition-colors"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
             <button
-              onClick={() => setSettingsPanelOpen(true)}
-              className="inline-flex items-center gap-2 rounded-lg border border-[var(--color-emerald)] bg-[var(--color-emerald)]/10 hover:bg-[var(--color-emerald)]/20 px-4 py-2 text-[12px] font-bold text-[var(--color-emerald)] transition-all active:scale-95"
+              onClick={() => {
+                if (scanning) {
+                  // Stop the current scan
+                  if (controllerRef.current) {
+                    controllerRef.current.abort();
+                    controllerRef.current = null;
+                  }
+                  setScanning(false);
+                  setActiveFix(null);
+                  setLiveThinking("");
+                  setPhase("idle");
+                  setLogs((prev) => [...prev, "⚠ Scan cancelled by user"]);
+                } else {
+                  setSettingsPanelOpen(true);
+                }
+              }}
+              className={`inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-[12px] font-bold transition-all active:scale-95 ${
+                scanning
+                  ? "border-[var(--color-red)] bg-[var(--color-red)]/10 hover:bg-[var(--color-red)]/20 text-[var(--color-red)]"
+                  : "border-[var(--color-emerald)] bg-[var(--color-emerald)]/10 hover:bg-[var(--color-emerald)]/20 text-[var(--color-emerald)]"
+              }`}
             >
-              <Settings className="h-4 w-4" />
-              New Scan
+              {scanning ? (
+                <>
+                  <X className="h-4 w-4" />
+                  Stop Scan
+                </>
+              ) : (
+                <>
+                  <Settings className="h-4 w-4" />
+                  New Scan
+                </>
+              )}
             </button>
             
             {/* User Menu */}
@@ -938,6 +995,8 @@ export default function Dashboard() {
           </div>
           <HealingHistory
             entries={filteredEntries}
+            scanning={scanning}
+            phase={phase}
             onLog={pushLog}
             onApplyPatches={handleApplyPatches}
             repoRoot={activeTarget}

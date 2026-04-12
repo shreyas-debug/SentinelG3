@@ -6,10 +6,23 @@ Request / response models shared across the API and agent layers.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
+from enum import Enum
+
 from pydantic import BaseModel, Field
 
 
-# ── Request Models ──────────────────────────────────────────────
+# ── Patch Approval Status ────────────────────────────────
+
+class PatchApprovalStatus(str, Enum):
+    PENDING  = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    APPLIED  = "applied"
+
+
+# ── Request Models ───────────────────────────────────────
 
 class AuditRequest(BaseModel):
     """Payload to start a new security audit."""
@@ -73,6 +86,17 @@ class Vulnerability(BaseModel):
             "including the goal, method, and potential impact."
         ),
     )
+    # AI confidence in this finding (0.0 – 1.0), set by the auditor
+    confidence_score: float = Field(
+        default=0.85,
+        ge=0.0,
+        le=1.0,
+        description="AI's confidence in this finding (0–1). Higher = more certain.",
+    )
+    false_positive_likelihood: str = Field(
+        default="low",
+        description="Estimated FP likelihood: low | medium | high",
+    )
 
 
 class AuditResult(BaseModel):
@@ -92,11 +116,15 @@ class AuditResult(BaseModel):
     )
 
 
-# ── Patch result (Fixer output) ─────────────────────────────────
+# ── Patch result (Fixer output) ──────────────────────────
 
 class PatchResult(BaseModel):
     """Output of the Fixer agent for a single vulnerability."""
 
+    patch_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique identifier for this patch (UUID).",
+    )
     file_path: str = Field(
         description="Path to the file that was patched.",
     )
@@ -115,9 +143,31 @@ class PatchResult(BaseModel):
         default="",
         description="Human-readable status or error message.",
     )
+    status: PatchApprovalStatus = Field(
+        default=PatchApprovalStatus.PENDING,
+        description="Lifecycle state of this patch.",
+    )
+    risk_score: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="Risk score 1–10 (10 = most dangerous). Derived from severity + scope.",
+    )
+    backup_path: str | None = Field(
+        default=None,
+        description="Path to the backup file created before patching.",
+    )
+    reviewed_at: datetime | None = Field(
+        default=None,
+        description="Timestamp when the patch was last reviewed.",
+    )
+    rejection_reason: str = Field(
+        default="",
+        description="Optional reason if patch was rejected.",
+    )
 
 
-# ── API-level Finding (public contract) ─────────────────────────
+# ── API-level Finding (public contract) ─────────────────
 
 class Finding(BaseModel):
     """A single security finding exposed through the REST API."""
@@ -141,7 +191,7 @@ class AuditResponse(BaseModel):
     scanned_files: int = 0
 
 
-# ── Orchestrator summary ────────────────────────────────────────
+# ── Orchestrator summary ─────────────────────────────────
 
 class HealingEntry(BaseModel):
     """One vulnerability + its fix outcome inside a healing cycle."""
@@ -170,3 +220,19 @@ class PipelineStatusResponse(BaseModel):
         description="not_started | auditing | fixing | validating | done",
     )
     message: str = ""
+
+
+# ── Patch review request/response ─────────────────────────
+
+class PatchReviewRequest(BaseModel):
+    """Request body for approve/reject endpoints."""
+    comments: str = Field(default="", description="Optional reviewer comments.")
+    rejection_reason: str = Field(default="", description="Required when rejecting a patch.")
+
+
+class PatchReviewResponse(BaseModel):
+    """Response from patch review endpoints."""
+    patch_id: str
+    status: PatchApprovalStatus
+    message: str
+    reviewed_at: datetime | None = None

@@ -30,9 +30,17 @@ class Settings:
     GEMINI_FALLBACK_MODEL: str = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3-pro-preview")
 
     # Path traversal guard: semicolon-separated list of allowed scan roots
-    # Example: "C:\Users\Me\Projects;D:\Work\Repos"
+    # Example: "C:\\Users\\Me\\Projects;D:\\Work\\Repos"
     # If empty, all local paths are allowed (use with caution)
     ALLOWED_SCAN_ROOTS: str = os.getenv("ALLOWED_SCAN_ROOTS", "")
+
+    # CORS origins: comma-separated list of allowed origins
+    # Example: "https://sentinel-g3.vercel.app,https://myapp.com"
+    # Defaults to "*" for development. Set explicitly for production.
+    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "*")
+
+    # Maximum number of files to scan in parallel (semaphore concurrency)
+    MAX_CONCURRENT_SCANS: int = int(os.getenv("MAX_CONCURRENT_SCANS", "3"))
 
     @classmethod
     def validate(cls) -> None:
@@ -42,6 +50,13 @@ class Settings:
                 "GEMINI_API_KEY is not set. "
                 "Copy .env.template to .env and add your key."
             )
+
+    @classmethod
+    def get_allowed_origins(cls) -> list[str]:
+        """Return CORS origins as a list. '*' means all origins."""
+        if cls.ALLOWED_ORIGINS.strip() == "*":
+            return ["*"]
+        return [o.strip() for o in cls.ALLOWED_ORIGINS.split(",") if o.strip()]
 
 
 settings = Settings()

@@ -1,0 +1,79 @@
+# Sentinel-G3 Security Scan
+# Automatically scans your repository for security vulnerabilities on every
+# push and pull request, and uploads results to GitHub Advanced Security.
+
+name: Sentinel-G3 Security Audit
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  schedule:
+    # Run every Monday at 09:00 UTC
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      fail_on:
+        description: "Severity to fail on (critical, high, medium)"
+        required: false
+        default: "critical high"
+
+permissions:
+  contents: read
+  security-events: write   # required for uploading SARIF
+
+jobs:
+  sentinel-security-scan:
+    name: Sentinel-G3 Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout repository ──────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── 3. Install dependencies ─────────────────────────
+      - name: Install Sentinel-G3 dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. Run Sentinel-G3 scan ─────────────────────────
+      - name: Run security scan
+        id: scan
+        run: |
+          FAIL_ON="${{ github.event.inputs.fail_on || 'critical high' }}"
+          python scripts/ci_scan.py \
+            --target . \
+            --fail-on $FAIL_ON \
+            --sarif sentinel-g3-results.sarif
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Lock CORS for your production URL:
+          # ALLOWED_ORIGINS: "https://your-sentinel-g3.vercel.app"
+
+      # ── 5. Upload SARIF to GitHub Advanced Security ─────
+      - name: Upload SARIF to GitHub Advanced Security
+        uses: github/codeql-action/upload-sarif@v3
+        # Run even if the scan found blocking issues
+        if: always()
+        with:
+          sarif_file: sentinel-g3-results.sarif
+          category: sentinel-g3
+
+      # ── 6. Upload SARIF as workflow artifact ─────────────
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sentinel-g3-sarif-${{ github.sha }}
+          path: sentinel-g3-results.sarif
+          retention-days: 30
