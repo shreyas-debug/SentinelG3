@@ -520,7 +520,8 @@ async def apply_batch(request: ApplyBatchRequest):
                 await asyncio.to_thread(backup_dest.write_text, original_text, "utf-8")
                 
             await orchestrator.fixer.apply_patch(str(file_abs), patch.new_content)
-            applied_files.append(str(file_abs.relative_to(base_dir)))
+            if patch.file_path not in applied_files:
+                applied_files.append(patch.file_path)
             logger.info(f"✓ Applied patch to: {patch.file_path}")
             
         # If remote and user authorized PR creation

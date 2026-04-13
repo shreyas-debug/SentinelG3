@@ -18,6 +18,8 @@ import {
   LogOut,
   User,
   ChevronDown,
+  Download,
+  Info,
 } from "lucide-react";
 import { ScanButton } from "@/components/scan-button";
 import { LiveFeed } from "@/components/live-feed";
@@ -27,6 +29,7 @@ import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { StatusBadge } from "@/components/status-badge";
 import { VulnerabilityFilters, type SeverityFilter } from "@/components/vulnerability-filters";
 import { startScan, startZipScan, generateReport, downloadSarifReport, downloadJsonReport, downloadCsvReport, applyBatchPatches, type HealingEntry, type HealingSummary, type PRResult, type SSEEvent, type PatchResult } from "@/lib/api";
+import JSZip from "jszip";
 
 const DEFAULT_LOCAL = "E:\\Personal\\SentinelG3\\target_code";
 type ScanMode = "local" | "github" | "upload";
@@ -52,6 +55,7 @@ function SettingsPanel({
   setUploadedFile,
   scanning,
   onScan,
+  onShowTokenInfo,
 }: {
   open: boolean;
   onClose: () => void;
@@ -71,6 +75,7 @@ function SettingsPanel({
   setUploadedFile: (file: File | null) => void;
   scanning: boolean;
   onScan: () => void;
+  onShowTokenInfo: () => void;
 }) {
   const [showAutoApplyModal, setShowAutoApplyModal] = useState(false);
 
@@ -218,9 +223,19 @@ function SettingsPanel({
               </div>
 
               <div>
-                <label htmlFor="github-token" className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] mb-2 block">
-                  GitHub Token (for PR)
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label htmlFor="github-token" className="text-[11px] font-bold uppercase tracking-wider text-[var(--color-text-muted)]">
+                    GitHub Token (for PR)
+                  </label>
+                  <button
+                    onClick={onShowTokenInfo}
+                    className="inline-flex items-center gap-1 text-[10px] text-[var(--color-cyan)] hover:text-[var(--color-cyan)]/80 transition-colors"
+                    type="button"
+                  >
+                    <Info className="h-3 w-3" />
+                    How to get token?
+                  </button>
+                </div>
                 <div className="relative">
                   <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--color-text-muted)]" aria-hidden="true" />
                   <input
@@ -294,10 +309,14 @@ function SettingsPanel({
                 type="text"
                 value={targetDir}
                 onChange={(e) => setTargetDir(e.target.value)}
-                placeholder="C:\path\to\project"
+                placeholder="/absolute/path/to/your/project"
                 className="w-full bg-[var(--color-bg-terminal)] border border-[var(--color-border)] rounded-lg px-4 py-3 text-[13px] font-[var(--font-mono)] text-[var(--color-text-secondary)] focus:outline-none focus:border-[var(--color-emerald)] focus:ring-2 focus:ring-[var(--color-emerald)]/20 placeholder:text-[var(--color-text-muted)]/50"
                 aria-required="true"
+                aria-describedby="directory-help"
               />
+              <p id="directory-help" className="text-[10px] text-[var(--color-text-muted)] mt-1">
+                Must be an absolute path (e.g., Windows: <code>C:\Users\YourName\project</code>, Unix: <code>/home/user/project</code>)
+              </p>
             </div>
           )}
 
@@ -424,6 +443,7 @@ export default function Dashboard() {
   const [phase, setPhase] = useState<"idle" | "scanning" | "patching" | "complete">("idle");
   const [isApplyingAll, setIsApplyingAll] = useState(false);
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [showTokenInfo, setShowTokenInfo] = useState(false);
   const [noTokenWarning, setNoTokenWarning] = useState<{message: string; instructions: string[]} | null>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -474,6 +494,50 @@ export default function Dashboard() {
     });
   };
 
+  const handleDownloadPatchedFiles = async () => {
+    const readyEntries = filteredEntries.filter(
+      (e) => e.patch?.success && e.patch?.fixed_code && !e.healed
+    );
+
+    if (readyEntries.length === 0) {
+      setLogs((prev) => [...prev, "⚠️ No patched files available to download"]);
+      return;
+    }
+
+    try {
+      const zip = new JSZip();
+      const patchedFolder = zip.folder("patched_files");
+
+      readyEntries.forEach((entry) => {
+        if (entry.patch?.fixed_code) {
+          // Sanitize file path for ZIP
+          const fileName = entry.vulnerability.file_path.replace(/^\//, "");
+          patchedFolder?.file(fileName, entry.patch.fixed_code);
+        }
+      });
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `sentinel-g3-patched-${Date.now()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setLogs((prev) => [
+        ...prev,
+        `📦 Downloaded ${readyEntries.length} patched file(s) as ZIP`,
+      ]);
+    } catch (error) {
+      setLogs((prev) => [
+        ...prev,
+        `❌ Failed to create ZIP: ${error instanceof Error ? error.message : "Unknown error"}`,
+      ]);
+    }
+  };
+
   const handleApplyAllUnfixed = async () => {
     const unfixed = filteredEntries
       .filter((e) => e.patch?.success && e.patch?.fixed_code && !e.healed)
@@ -482,21 +546,23 @@ export default function Dashboard() {
     if (unfixed.length === 0) return;
     
     setIsApplyingAll(true);
-    pushLog(`▶ Applying exactly ${unfixed.length} patches to ${activeTarget}…`);
+    pushLog(`▶ Applying ${unfixed.length} patch(es) to ${activeTarget}...`);
     
     const result = await handleApplyPatches(unfixed);
     
     if (result.success) {
-      pushLog(`  ✓ Successfully applied ${unfixed.length} patches.`);
+      pushLog(`✅ Successfully applied ${unfixed.length} patch(es)`);
       if (result.pr_url) {
         setPrResult({ url: result.pr_url, number: parseInt(result.pr_url.split("/").pop() || "0", 10), branch: result.pr_url });
-        pushLog(`  ✓ Created Pull Request: ${result.pr_url}`);
+        pushLog(`🔗 Pull Request created: ${result.pr_url}`);
+        pushLog(`✨ Review and merge the PR to apply fixes to your repository`);
       } else if (result.applied_files && Array.isArray(result.applied_files)) {
-        pushLog(`  📁 Files modified:`);
+        pushLog(`📁 Modified files in: ${activeTarget}`);
         result.applied_files.forEach((file: string) => {
-          pushLog(`     ✓ ${file}`);
+          pushLog(`   ✓ ${file}`);
         });
-        pushLog(`  💾 Backups saved to: .sentinel-g3/backups/`);
+        pushLog(`💾 Backups saved to: ${activeTarget}\\.sentinel-g3\\backups\\`);
+        pushLog(`📥 Tip: Use "Download as ZIP" to save a copy of all fixed files`);
       }
       setEntries((prev) =>
         prev.map((entry) => {
@@ -508,7 +574,7 @@ export default function Dashboard() {
       );
       setStats((s) => ({ ...s, healed: s.healed + unfixed.length }));
     } else {
-      pushLog(`  ✗ Failed to bulk-apply patches: ${result.message}`);
+      pushLog(`❌ Failed to apply patches: ${result.message}`);
     }
     
     setIsApplyingAll(false);
@@ -595,7 +661,7 @@ export default function Dashboard() {
               };
               setLogs((prev) => [
                 ...prev,
-                `✗ ERROR: ${message}${detail ? ` — ${detail}` : ""}`,
+                `❌ ERROR: ${message}${detail ? ` — ${detail}` : ""}`,
               ]);
               setErrorBanner({ message, detail: detail ?? "", retryable: retryable ?? false });
               break;
@@ -674,7 +740,7 @@ export default function Dashboard() {
             };
             setLogs((prev) => [
               ...prev,
-              `✗ ERROR: ${message}${detail ? ` — ${detail}` : ""}`,
+              `❌ ERROR: ${message}${detail ? ` — ${detail}` : ""}`,
             ]);
             setErrorBanner({ message, detail: detail ?? "", retryable: retryable ?? false });
             break;
@@ -728,6 +794,7 @@ export default function Dashboard() {
         setUploadedFile={setUploadedFile}
         scanning={scanning}
         onScan={handleScan}
+        onShowTokenInfo={() => setShowTokenInfo(true)}
       />
 
       {/* ── Header (Clean & Minimal) ──────────────────────── */}
@@ -773,9 +840,9 @@ export default function Dashboard() {
                   <div className="absolute right-0 top-full mt-1 w-44 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-card)] shadow-2xl z-20 overflow-hidden">
                     {[
                       { label: "HTML Report",   action: () => { handleExportReport(); setExportMenuOpen(false); } },
-                      { label: "SARIF (.sarif)", action: async () => { setExportMenuOpen(false); try { await downloadSarifReport(summary); } catch { setLogs((p) => [...p, "✗ SARIF export failed"]); } } },
-                      { label: "JSON Report",   action: async () => { setExportMenuOpen(false); try { await downloadJsonReport(summary); } catch { setLogs((p) => [...p, "✗ JSON export failed"]); } } },
-                      { label: "CSV Report",    action: async () => { setExportMenuOpen(false); try { await downloadCsvReport(summary); } catch { setLogs((p) => [...p, "✗ CSV export failed"]); } } },
+                      { label: "SARIF (.sarif)", action: async () => { setExportMenuOpen(false); try { await downloadSarifReport(summary); } catch { setLogs((p) => [...p, "❌ SARIF export failed"]); } } },
+                      { label: "JSON Report",   action: async () => { setExportMenuOpen(false); try { await downloadJsonReport(summary); } catch { setLogs((p) => [...p, "❌ JSON export failed"]); } } },
+                      { label: "CSV Report",    action: async () => { setExportMenuOpen(false); try { await downloadCsvReport(summary); } catch { setLogs((p) => [...p, "❌ CSV export failed"]); } } },
                     ].map(({ label, action }) => (
                       <button
                         key={label}
@@ -797,11 +864,11 @@ export default function Dashboard() {
                     controllerRef.current.abort();
                     controllerRef.current = null;
                   }
-                  setScanning(false);
-                  setActiveFix(null);
-                  setLiveThinking("");
-                  setPhase("idle");
-                  setLogs((prev) => [...prev, "⚠ Scan cancelled by user"]);
+              setScanning(false);
+              setActiveFix(null);
+              setLiveThinking("");
+              setPhase("idle");
+              setLogs((prev) => [...prev, "⚠️ Scan cancelled by user"]);
                 } else {
                   setSettingsPanelOpen(true);
                 }
@@ -881,6 +948,154 @@ export default function Dashboard() {
             >
               View PR <ExternalLink className="h-3 w-3" />
             </a>
+          </div>
+        )}
+
+        {/* GitHub Token Info Modal */}
+        {showTokenInfo && (
+          <div 
+            className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowTokenInfo(false)}
+          >
+            <div 
+              className="relative max-w-2xl w-full mx-4 bg-[var(--color-bg-card)] border border-[var(--color-border)] rounded-2xl shadow-2xl overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="h-5 w-5 text-[var(--color-cyan)]" />
+                  <h3 className="text-lg font-bold text-[var(--color-text-primary)]">How to Get a GitHub Token</h3>
+                </div>
+                <button
+                  onClick={() => setShowTokenInfo(false)}
+                  className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors"
+                  aria-label="Close"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* Content */}
+              <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                <p className="text-sm text-[var(--color-text-secondary)] leading-relaxed">
+                  A Personal Access Token allows Sentinel-G3 to create Pull Requests on your behalf. Follow these steps to generate one:
+                </p>
+
+                <div className="space-y-3">
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-[var(--color-cyan)]/20 text-[var(--color-cyan)] text-xs font-bold">1</span>
+                    <div>
+                      <p className="text-sm text-[var(--color-text-primary)] font-semibold">Go to GitHub Settings</p>
+                      <p className="text-xs text-[var(--color-text-muted)] mt-1">
+                        Visit{" "}
+                        <a 
+                          href="https://github.com/settings/tokens/new" 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-[var(--color-cyan)] hover:underline inline-flex items-center gap-1"
+                        >
+                          github.com/settings/tokens/new
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-[var(--color-cyan)]/20 text-[var(--color-cyan)] text-xs font-bold">2</span>
+                    <div>
+                      <p className="text-sm text-[var(--color-text-primary)] font-semibold">Set Token Name</p>
+                      <p className="text-xs text-[var(--color-text-muted)] mt-1">
+                        Give it a descriptive name like "Sentinel-G3"
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-[var(--color-cyan)]/20 text-[var(--color-cyan)] text-xs font-bold">3</span>
+                    <div>
+                      <p className="text-sm text-[var(--color-text-primary)] font-semibold">Select Expiration</p>
+                      <p className="text-xs text-[var(--color-text-muted)] mt-1">
+                        Choose an expiration (recommended: 30 days)
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-[var(--color-cyan)]/20 text-[var(--color-cyan)] text-xs font-bold">4</span>
+                    <div>
+                      <p className="text-sm text-[var(--color-text-primary)] font-semibold">Select Scopes</p>
+                      <p className="text-xs text-[var(--color-text-muted)] mt-1 mb-2">
+                        Check these permissions:
+                      </p>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 text-xs">
+                          <code className="px-2 py-1 rounded bg-[var(--color-bg-terminal)] text-[var(--color-emerald)] font-[var(--font-mono)]">repo</code>
+                          <span className="text-[var(--color-text-muted)]">Full control of private repositories</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <code className="px-2 py-1 rounded bg-[var(--color-bg-terminal)] text-[var(--color-emerald)] font-[var(--font-mono)]">workflow</code>
+                          <span className="text-[var(--color-text-muted)]">Update GitHub Action workflows</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-[var(--color-cyan)]/20 text-[var(--color-cyan)] text-xs font-bold">5</span>
+                    <div>
+                      <p className="text-sm text-[var(--color-text-primary)] font-semibold">Generate Token</p>
+                      <p className="text-xs text-[var(--color-text-muted)] mt-1">
+                        Click "Generate token" at the bottom
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full bg-[var(--color-cyan)]/20 text-[var(--color-cyan)] text-xs font-bold">6</span>
+                    <div>
+                      <p className="text-sm text-[var(--color-text-primary)] font-semibold">Copy & Paste</p>
+                      <p className="text-xs text-[var(--color-text-muted)] mt-1">
+                        Copy the token (starts with <code className="text-[var(--color-amber)]">ghp_</code>) and paste it above
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-[var(--color-amber)]/30 bg-[var(--color-amber)]/5 p-4">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 text-[var(--color-amber)] shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-xs font-semibold text-[var(--color-amber)]">Security Note</p>
+                      <p className="text-xs text-[var(--color-text-muted)] mt-1">
+                        Your token is only used for this browser session and is never stored on our servers. Keep it secret and don't share it publicly.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+                <button
+                  onClick={() => setShowTokenInfo(false)}
+                  className="px-4 py-2 rounded-lg text-sm font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-card)] transition-colors"
+                >
+                  Close
+                </button>
+                <a
+                  href="https://github.com/settings/tokens/new"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--color-emerald)]/20 border border-[var(--color-emerald)] text-[var(--color-emerald)] text-sm font-semibold hover:bg-[var(--color-emerald)]/30 transition-colors"
+                >
+                  <Github className="h-4 w-4" />
+                  Create Token
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </div>
+            </div>
           </div>
         )}
 
@@ -978,19 +1193,52 @@ export default function Dashboard() {
               )}
             </h2>
             
-            {/* Bulk Apply Button */}
+            {/* Bulk Action Buttons - Conditional based on scan mode */}
             {filteredEntries.some((e) => e.patch?.success && e.patch?.fixed_code && !e.healed) && (
-              <button
-                onClick={handleApplyAllUnfixed}
-                disabled={isApplyingAll || scanning}
-                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold bg-emerald-600/20 border border-emerald-500 text-emerald-400 hover:bg-emerald-600/30 transition-all active:scale-95 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isApplyingAll ? (
-                  <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Batch Applying…</>
-                ) : (
-                  <><Shield className="h-3.5 w-3.5" /> Apply All Pending Fixes</>
+              <div className="flex items-center gap-2">
+                {/* Show Download button for: GitHub without token OR Upload mode */}
+                {((scanMode === "github" && (!githubToken || !createPr)) || scanMode === "upload") && (
+                  <button
+                    onClick={handleDownloadPatchedFiles}
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold bg-cyan-600/20 border border-cyan-500 text-cyan-400 hover:bg-cyan-600/30 transition-all active:scale-95 shadow-sm"
+                    title="Download patched files as a ZIP archive"
+                  >
+                    <Download className="h-3.5 w-3.5" /> Download as ZIP
+                  </button>
                 )}
-              </button>
+                
+                {/* Show Apply to Local Files for local mode */}
+                {scanMode === "local" && (
+                  <button
+                    onClick={handleApplyAllUnfixed}
+                    disabled={isApplyingAll || scanning}
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold bg-emerald-600/20 border border-emerald-500 text-emerald-400 hover:bg-emerald-600/30 transition-all active:scale-95 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Apply patches directly to your local files (creates backups)"
+                  >
+                    {isApplyingAll ? (
+                      <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Applying to Files…</>
+                    ) : (
+                      <><Shield className="h-3.5 w-3.5" /> Apply to Local Files</>
+                    )}
+                  </button>
+                )}
+                
+                {/* Show Create PR button for GitHub with token */}
+                {scanMode === "github" && githubToken && createPr && (
+                  <button
+                    onClick={handleApplyAllUnfixed}
+                    disabled={isApplyingAll || scanning}
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold bg-emerald-600/20 border border-emerald-500 text-emerald-400 hover:bg-emerald-600/30 transition-all active:scale-95 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Create a Pull Request on GitHub with the fixes"
+                  >
+                    {isApplyingAll ? (
+                      <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Creating PR…</>
+                    ) : (
+                      <><GitPullRequest className="h-3.5 w-3.5" /> Create Pull Request</>
+                    )}
+                  </button>
+                )}
+              </div>
             )}
           </div>
           <HealingHistory

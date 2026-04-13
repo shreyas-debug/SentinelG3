@@ -11,9 +11,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env from project root
-_env_path = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=_env_path)
+# Load .env from project root.
+# override=True: values in .env win over pre-set shell/OS variables (common on
+# Windows where GEMINI_API_KEY is set globally but you want the repo's .env).
+ENV_FILE_PATH: Path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=ENV_FILE_PATH, override=True)
 
 
 class Settings:

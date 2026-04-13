@@ -7,6 +7,13 @@ Run with:
 
 from __future__ import annotations
 
+# Load repo `.env` before any `app.*` import runs (avoids env being read too early).
+from pathlib import Path as _PathForEnv
+from dotenv import load_dotenv as _load_dotenv_early
+
+_env_early = _PathForEnv(__file__).resolve().parent.parent / ".env"
+_load_dotenv_early(dotenv_path=_env_early, override=True)
+
 import logging
 
 from fastapi import FastAPI, Request
@@ -17,7 +24,7 @@ from slowapi.util import get_remote_address
 
 from app.api.report import router as report_router
 from app.api.routes import router as api_router
-from app.config import settings
+from app.config import ENV_FILE_PATH, settings
 
 # ── Logging ─────────────────────────────────────────────
 logging.basicConfig(
@@ -63,5 +70,15 @@ async def _startup() -> None:
 
 @app.get("/health", tags=["meta"])
 async def health_check():
-    """Liveness probe."""
-    return {"status": "ok", "service": "sentinel-g3"}
+    """Liveness probe.
+
+    In development, includes non-sensitive hints so you can confirm the backend
+    picked up ``.env`` (e.g. dashboard pointed at Render will still show quota
+    for the *remote* key, not this process).
+    """
+    body: dict = {"status": "ok", "service": "sentinel-g3"}
+    if settings.APP_ENV.strip().lower() == "development":
+        body["env_file"] = str(ENV_FILE_PATH)
+        body["env_file_exists"] = ENV_FILE_PATH.is_file()
+        body["gemini_api_key_length"] = len(settings.GEMINI_API_KEY or "")
+    return body

@@ -47,9 +47,18 @@ function ConfidenceBadge({ score }: { score?: number }) {
     pct >= 70 ? "text-[var(--color-cyan)] border-[var(--color-cyan)]/30 bg-[var(--color-cyan)]/10" :
     pct >= 50 ? "text-[var(--color-amber)] border-[var(--color-amber)]/30 bg-[var(--color-amber)]/10" :
                 "text-[var(--color-red)] border-[var(--color-red)]/30 bg-[var(--color-red)]/10";
+  
+  const confidenceDesc = 
+    pct >= 90 ? "Very high confidence - AI is highly certain this is a vulnerability" :
+    pct >= 70 ? "High confidence - AI believes this is a real issue" :
+    pct >= 50 ? "Medium confidence - AI thinks this might be a vulnerability" :
+                "Low confidence - AI is uncertain, may be a false positive";
 
   return (
-    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border ${color}`}>
+    <span 
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border ${color} cursor-help`}
+      title={confidenceDesc}
+    >
       <Zap className="h-2.5 w-2.5" />
       {pct}% conf.
     </span>
@@ -68,9 +77,18 @@ function RiskBadge({ score }: { score?: number }) {
     score >= 6 ? "text-[var(--color-amber)] border-[var(--color-amber)]/30 bg-[var(--color-amber)]/10" :
     score >= 4 ? "text-[var(--color-cyan)] border-[var(--color-cyan)]/30 bg-[var(--color-cyan)]/10" :
                  "text-[var(--color-text-muted)] border-[var(--color-border)] bg-[var(--color-bg-secondary)]";
+  
+  const riskDesc =
+    score >= 8 ? "Critical risk - This fix changes critical logic and requires careful review" :
+    score >= 6 ? "High risk - This fix modifies important code paths" :
+    score >= 4 ? "Medium risk - This fix has moderate impact on behavior" :
+                 "Low risk - This fix has minimal impact on existing functionality";
 
   return (
-    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border ${color}`}>
+    <span 
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border ${color} cursor-help`}
+      title={riskDesc}
+    >
       <ShieldAlert className="h-2.5 w-2.5" />
       {label} ({score}/10)
     </span>
@@ -677,8 +695,9 @@ function EntryRow({
 
   const isPendingReview = localPatch?.success && localPatch?.fixed_code && !healed && !rejected;
   const needsGeneration = !localPatch;
+  const patchFailed = localPatch && !localPatch.success;
   const statusVariant = healed ? "healed" : rejected ? "unfixed" : isPendingReview ? "pending" : "unfixed";
-  const statusLabel = healed ? "Healed" : rejected ? "Rejected" : isPendingReview ? "Pending Review" : needsGeneration ? "No Fix Yet" : "Unfixed";
+  const statusLabel = healed ? "Healed" : rejected ? "Rejected" : isPendingReview ? "Pending Review" : patchFailed ? "Fix Failed" : needsGeneration ? "No Fix Yet" : "Unfixed";
 
   return (
     <div className={`mb-4 rounded-xl border overflow-hidden transition-all hover:border-[var(--color-cyan)]/30 shadow-[0_4px_12px_rgba(0,0,0,0.2)] ${
@@ -720,10 +739,6 @@ function EntryRow({
           <span className="text-[13px] text-[var(--color-text-primary)] truncate flex-1">
             {v.issue.length > 90 ? v.issue.slice(0, 90) + "…" : v.issue}
           </span>
-          {/* Confidence inline */}
-          {v.confidence_score !== undefined && (
-            <ConfidenceBadge score={v.confidence_score} />
-          )}
           <span className="text-[11px] text-[var(--color-text-muted)] font-mono shrink-0">
             {v.file_path}:{v.line_number}
           </span>
@@ -739,16 +754,13 @@ function EntryRow({
           {/* Card header: title + action buttons */}
           <div className="flex items-start justify-between gap-4 px-4 py-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)]/50">
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                <Badge variant={severityVariant(v.severity)} className="text-[10px]">{v.severity}</Badge>
-                <code className="text-[10px] font-[var(--font-mono)] text-[var(--color-text-muted)]">
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                <code className="text-[11px] font-[var(--font-mono)] text-[var(--color-text-muted)]">
                   {v.file_path}:{v.line_number}
                 </code>
-                {localPatch?.risk_score && <RiskBadge score={localPatch.risk_score} />}
-                <ConfidenceBadge score={v.confidence_score} />
               </div>
-              <p className="text-[13px] font-medium text-[var(--color-text-primary)] leading-snug">
-                {v.issue.length > 120 ? v.issue.slice(0, 120) + "…" : v.issue}
+              <p className="text-[14px] font-medium text-[var(--color-text-primary)] leading-snug">
+                {v.issue}
               </p>
             </div>
             {/* Action buttons */}
@@ -765,7 +777,27 @@ function EntryRow({
                   onLog={onLog}
                 />
               )}
-              {!needsGeneration && !rejected && (
+              {patchFailed && (
+                <div className="flex items-center gap-2">
+                  <span 
+                    className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-amber)] border border-[var(--color-amber)]/30 bg-[var(--color-amber)]/10 rounded-md px-2.5 py-1 cursor-help"
+                    title={localPatch?.message || "Fix generation failed"}
+                  >
+                    <AlertTriangle className="h-3 w-3" /> Fix Failed
+                  </span>
+                  <GenerateFix
+                    entry={entry}
+                    onGenerated={(patch, fixerThought, modelUsed) => {
+                      setLocalPatch(patch);
+                      if (onPatchGenerated) {
+                        onPatchGenerated(index, patch, fixerThought, modelUsed);
+                      }
+                    }}
+                    onLog={onLog}
+                  />
+                </div>
+              )}
+              {!needsGeneration && !rejected && !patchFailed && (
                 <>
                   {repoRoot && (
                     <RollbackButton
