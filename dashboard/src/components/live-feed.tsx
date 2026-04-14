@@ -60,7 +60,7 @@ function parseLogLine(line: string): ParsedSegment[] {
     ? "text-[var(--color-emerald)]"
     : line.includes("ERROR") || line.includes("✗") || line.includes("Not patched")
       ? "text-[var(--color-red)]"
-      : "text-slate-300";
+      : "text-[var(--color-text-primary)]";
 
   let match: RegExpExecArray | null;
   while ((match = combined.exec(line)) !== null) {
