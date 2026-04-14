@@ -1140,8 +1140,9 @@ async def scan_uploaded_zip(
                         vuln, original_code,
                     )
                     
-                    fixer_thought = orchestrator.fixer.accumulated_thinking
-                    if not fixer_thought:
+                    # Extract fixer thinking from the response
+                    fixer_thought = ""
+                    if orchestrator.fixer.last_response:
                         fixer_thought = orchestrator.extract_full_thinking(
                             orchestrator.fixer.last_response,
                         )
@@ -1150,8 +1151,8 @@ async def scan_uploaded_zip(
                         "vulnerability": vuln.model_dump(),
                         "patch": patch_result.model_dump(),
                         "healed": False,  # Not actually applied for uploads
-                        "auditor_thought": auditor_thought[:500],
-                        "fixer_thought": fixer_thought[:500],
+                        "auditor_thought": auditor_thought[:500] if auditor_thought else "",
+                        "fixer_thought": fixer_thought[:500] if fixer_thought else "",
                     }
                     entries.append(entry)
                     yield _sse_event("patch", entry)
