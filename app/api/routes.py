@@ -715,106 +715,167 @@ async def run_scan(request: Request, body: ScanRequest):
 
         _SENTINEL = object()  # signals "fixer task done"
 
-        for idx, vuln in enumerate(audit_result.vulnerabilities):
-            if idx > 0:
-                await asyncio.sleep(1)
+        # Group vulnerabilities by file
+        from collections import defaultdict
+        vulns_by_file: dict[str, list[Vulnerability]] = defaultdict(list)
+        for vuln in audit_result.vulnerabilities:
+            vulns_by_file[vuln.file_path].append(vuln)
 
-            yield _sse_event("log", {
-                "message": f"  [{idx+1}/{len(audit_result.vulnerabilities)}] "
-                           f"Fixing {vuln.file_path}:{vuln.line_number} ({vuln.severity})"
-            })
-
-            # Read file
-            file_abs = root / vuln.file_path
+        file_idx = 0
+        total_vulns = len(audit_result.vulnerabilities)
+        
+        for file_path, file_vulns in vulns_by_file.items():
+            file_abs = root / file_path
+            
+            # Read file once for all vulnerabilities in it
             try:
                 original_code = file_abs.read_text(encoding="utf-8")
             except OSError as exc:
-                yield _sse_event("log", {"message": f"    ✗ Cannot read file: {exc}"})
-                yield _sse_event("log", {
-                    "message": f"    ✗ Not patched — {vuln.file_path}:{vuln.line_number} (could not read file)"
-                })
-                skip_entry = {
-                    "vulnerability": vuln.model_dump(),
-                    "patch": {"file_path": vuln.file_path, "success": False, "message": str(exc),
-                              "original_code": "", "fixed_code": ""},
-                    "healed": False,
-                }
-                entries.append(skip_entry)
-                yield _sse_event("patch", skip_entry)
+                yield _sse_event("log", {"message": f"  ✗ Cannot read file: {file_path}"})
+                for vuln in file_vulns:
+                    file_idx += 1
+                    yield _sse_event("log", {
+                        "message": f"  [{file_idx}/{total_vulns}] ✗ Not patched — {vuln.file_path}:{vuln.line_number} (could not read file)"
+                    })
+                    skip_entry = {
+                        "vulnerability": vuln.model_dump(),
+                        "patch": {"file_path": vuln.file_path, "success": False, "message": str(exc),
+                                  "original_code": "", "fixed_code": "", "patch_id": f"patch_{file_idx}"},
+                        "healed": False,
+                        "auditor_thought": auditor_thought[:500] if auditor_thought else "",
+                        "fixer_thought": "",
+                    }
+                    entries.append(skip_entry)
+                    yield _sse_event("patch", skip_entry)
                 continue
 
-            # ── Stream thinking in real-time ──────────────
-            thinking_queue: asyncio.Queue = asyncio.Queue()
-            fixer_thinking_parts: list[str] = []
-
-            async def _on_thinking(text: str) -> None:
-                fixer_thinking_parts.append(text)
-                await thinking_queue.put(text)
-
-            async def _run_fixer() -> PatchResult:
-                result = await orchestrator.fixer.generate_patch(
-                    vuln, original_code, on_thinking=_on_thinking,
-                )
-                await thinking_queue.put(_SENTINEL)
-                return result
-
-            fixer_task = asyncio.create_task(_run_fixer())
-
-            # Drain thinking chunks into SSE events while fixer runs
-            while True:
-                item = await thinking_queue.get()
-                if item is _SENTINEL:
-                    break
-                yield _sse_event("thinking", {
-                    "text": item,
-                    "index": idx,
-                    "file": vuln.file_path,
+            if len(file_vulns) > 1:
+                # Consolidate multiple vulnerabilities into a single patch
+                yield _sse_event("log", {
+                    "message": f"  📋 Consolidating {len(file_vulns)} vulnerabilities in {file_path}..."
                 })
 
-            patch = await fixer_task
+            for vuln in file_vulns:
+                file_idx += 1
+                if file_idx > 1:
+                    await asyncio.sleep(1)
 
-            # Build fixer thought from streamed parts, or fall back
-            fixer_thought = "\n".join(fixer_thinking_parts)
-            if not fixer_thought:
-                fixer_thought = orchestrator.extract_full_thinking(
-                    orchestrator.fixer.last_response,
-                )
+                yield _sse_event("log", {
+                    "message": f"  [{file_idx}/{total_vulns}] "
+                               f"Fixing {vuln.file_path}:{vuln.line_number} ({vuln.severity})"
+                })
 
-            healed = False
-            if patch.success and patch.fixed_code:
-                if auto_apply:
-                    try:
-                        await orchestrator.fixer.apply_patch(str(file_abs), patch.fixed_code)
-                        healed = True
-                        healed_count += 1
+                # ── Stream thinking in real-time ──────────────
+                thinking_queue: asyncio.Queue = asyncio.Queue()
+                fixer_thinking_parts: list[str] = []
+
+                async def _on_thinking(text: str) -> None:
+                    fixer_thinking_parts.append(text)
+                    await thinking_queue.put(text)
+
+                async def _run_fixer() -> PatchResult:
+                    # Use consolidated patch if multiple vulns in same file
+                    if len(file_vulns) > 1:
+                        result = await orchestrator.fixer.generate_consolidated_patch(
+                            file_vulns, original_code, on_thinking=_on_thinking,
+                        )
+                    else:
+                        result = await orchestrator.fixer.generate_patch(
+                            vuln, original_code, on_thinking=_on_thinking,
+                        )
+                    await thinking_queue.put(_SENTINEL)
+                    return result
+
+                fixer_task = asyncio.create_task(_run_fixer())
+
+                # Drain thinking chunks into SSE events while fixer runs
+                while True:
+                    item = await thinking_queue.get()
+                    if item is _SENTINEL:
+                        break
+                    yield _sse_event("thinking", {
+                        "text": item,
+                        "index": file_idx - 1,
+                        "file": vuln.file_path,
+                    })
+
+                patch = await fixer_task
+
+                # Build fixer thought from streamed parts, or fall back
+                fixer_thought = "\n".join(fixer_thinking_parts)
+                if not fixer_thought:
+                    fixer_thought = orchestrator.extract_full_thinking(
+                        orchestrator.fixer.last_response,
+                    )
+
+                healed = False
+                if patch.success and patch.fixed_code:
+                    # Log successful patch generation
+                    yield _sse_event("log", {
+                        "message": f"    ✓ Fix generated — {vuln.file_path}:{vuln.line_number}"
+                    })
+                    
+                    if auto_apply:
+                        try:
+                            await orchestrator.fixer.apply_patch(str(file_abs), patch.fixed_code)
+                            healed = True
+                            healed_count += 1
+                            yield _sse_event("log", {
+                                "message": f"    ✓ Patched {vuln.file_path}:{vuln.line_number} ({vuln.severity})"
+                            })
+                        except Exception as exc:
+                            yield _sse_event("log", {
+                                "message": f"    ✗ Not patched — {vuln.file_path}:{vuln.line_number} (apply failed: {exc})"
+                            })
+                    else:
+                        # Incremental Healing mode — patch NOT applied, user must approve
                         yield _sse_event("log", {
-                            "message": f"    ✓ Patched {vuln.file_path}:{vuln.line_number} ({vuln.severity})"
-                        })
-                    except Exception as exc:
-                        yield _sse_event("log", {
-                            "message": f"    ✗ Not patched — {vuln.file_path}:{vuln.line_number} (apply failed: {exc})"
+                            "message": f"    ⏳ Fix ready for review — {vuln.file_path}:{vuln.line_number} (awaiting approval)"
                         })
                 else:
-                    # Incremental Healing mode — patch NOT applied, user must approve
                     yield _sse_event("log", {
-                        "message": f"    ⏳ Fix ready for review — {vuln.file_path}:{vuln.line_number} (awaiting approval)"
+                        "message": f"    ✗ Not patched — {vuln.file_path}:{vuln.line_number} (no fix generated)"
                     })
-            else:
-                yield _sse_event("log", {
-                    "message": f"    ✗ Not patched — {vuln.file_path}:{vuln.line_number} (no fix generated)"
-                })
 
-            entry = {
-                "vulnerability": vuln.model_dump(),
-                "patch": patch.model_dump(),
-                "healed": healed,
-                "auditor_thought": auditor_thought,
-                "fixer_thought": fixer_thought,
-                "model_used": orchestrator.fixer.active_model,
-            }
-            entries.append(entry)
+                entry = {
+                    "vulnerability": vuln.model_dump(),
+                    "patch": patch.model_dump(),
+                    "healed": healed,
+                    "auditor_thought": auditor_thought,
+                    "fixer_thought": fixer_thought,
+                    "model_used": orchestrator.fixer.active_model,
+                }
+                entries.append(entry)
 
-            yield _sse_event("patch", entry)
+                yield _sse_event("patch", entry)
+                
+                # If multiple vulns in same file, use the same patch for all
+                if len(file_vulns) > 1:
+                    # Update original_code to the patched version for the next vulnerability
+                    if patch.success and patch.fixed_code:
+                        original_code = patch.fixed_code
+                        # Only generate patch once for the first vuln, share it with others
+                        for remaining_vuln in file_vulns[file_vulns.index(vuln) + 1:]:
+                            file_idx += 1
+                            yield _sse_event("log", {
+                                "message": f"  [{file_idx}/{total_vulns}] "
+                                           f"{remaining_vuln.file_path}:{remaining_vuln.line_number} — using consolidated fix"
+                            })
+                            yield _sse_event("log", {
+                                "message": f"    ⏳ Fix ready for review — {remaining_vuln.file_path}:{remaining_vuln.line_number} (awaiting approval)"
+                            })
+                            
+                            shared_entry = {
+                                "vulnerability": remaining_vuln.model_dump(),
+                                "patch": patch.model_dump(),
+                                "healed": healed,
+                                "auditor_thought": auditor_thought,
+                                "fixer_thought": fixer_thought,
+                                "model_used": orchestrator.fixer.active_model,
+                            }
+                            entries.append(shared_entry)
+                            yield _sse_event("patch", shared_entry)
+                        break  # Done with this file, move to next file
 
         # ── Write manifest ──────────────────────────────
         summary = HealingCycleSummary(

@@ -100,6 +100,53 @@ class FixerAgent(BaseAgent):
             vulnerability, original_code, prompt, on_thinking,
         )
 
+    async def generate_consolidated_patch(
+        self,
+        vulnerabilities: list[Vulnerability],
+        original_code: str,
+        on_thinking: Callable[[str], Awaitable[None]] | None = None,
+    ) -> PatchResult:
+        """Generate a single patch that fixes multiple vulnerabilities in the same file.
+
+        Args:
+            vulnerabilities: List of findings from the Auditor agent (all in same file).
+            original_code: The full source text of the vulnerable file.
+            on_thinking: Optional async callback for thinking chunks.
+
+        Returns:
+            A ``PatchResult`` containing the fixed code that addresses all vulnerabilities.
+        """
+        if not vulnerabilities:
+            return PatchResult(
+                patch_id="",
+                file_path="",
+                original_code=original_code,
+                fixed_code="",
+                success=False,
+                message="No vulnerabilities provided",
+            )
+
+        file_path = vulnerabilities[0].file_path
+        issues_list = "\n".join([
+            f"  {i+1}. **Line {v.line_number}** ({v.severity}): {v.issue}\n     Fix: {v.fix_suggestion}"
+            for i, v in enumerate(vulnerabilities)
+        ])
+
+        prompt = (
+            f"You are a Senior Security Engineer. "
+            f"This file has {len(vulnerabilities)} security vulnerabilities that need to be fixed. "
+            f"Rewrite the ENTIRE file to fix ALL of these issues while maintaining the original functionality. "
+            f"Return ONLY the complete fixed code block.\n\n"
+            f"### File: `{file_path}`\n\n"
+            f"### Vulnerabilities to fix:\n{issues_list}\n\n"
+            f"### Original code\n"
+            f"```\n{original_code}\n```"
+        )
+
+        return await self._generate_with_fallback(
+            vulnerabilities[0], original_code, prompt, on_thinking,
+        )
+
     async def _generate_with_fallback(
         self,
         vulnerability: Vulnerability,
