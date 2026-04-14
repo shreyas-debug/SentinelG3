@@ -39,12 +39,14 @@ function parseLogLine(line: string): ParsedSegment[] {
   const segments: ParsedSegment[] = [];
   const keywords: [RegExp, string][] = [
     [/\b(CRITICAL|Threat)\b/gi, "text-[var(--color-red)] font-bold animate-pulse"],
-    [/(Not patched)/gi, "text-[var(--color-red)] font-semibold"],
-    [/\b(ERROR|✗|FAIL(?:ED)?)\b/gi, "text-[var(--color-red)] font-semibold"],
-    [/\b(WARNING|WARN)\b/gi, "text-[var(--color-amber)]"],
-    [/(Fixed|Healed|✓|Patched)/gi, "text-[var(--color-emerald)] font-semibold crt-glow-green"],
+    [/(Not patched|no fix generated)/gi, "text-[var(--color-red)] font-semibold"],
+    [/\b(ERROR|✗|FAIL(?:ED)?|❌)\b/gi, "text-[var(--color-red)] font-semibold"],
+    [/\b(WARNING|WARN|⚠️)\b/gi, "text-[var(--color-amber)]"],
+    [/(Fixed|Healed|✓|Patched|✅|Fix generated)/gi, "text-[var(--color-emerald)] font-semibold crt-glow-green"],
+    [/(Fix ready for review|awaiting approval|⏳)/gi, "text-[var(--color-amber)]"],
+    [/(Consolidating|using consolidated fix|📋)/gi, "text-[var(--color-cyan)]"],
     [/\b(INFO)\b/gi, "text-[var(--color-text-muted)]"],
-    [/(Cloning|Committed|Pushed|Pull Request created)/gi, "text-[var(--color-cyan)]"],
+    [/(Cloning|Committed|Pushed|Pull Request created|🔗|📁|💾|📥)/gi, "text-[var(--color-cyan)]"],
   ];
 
   // Build a combined regex
@@ -58,7 +60,7 @@ function parseLogLine(line: string): ParsedSegment[] {
     ? "text-[var(--color-emerald)]"
     : line.includes("ERROR") || line.includes("✗") || line.includes("Not patched")
       ? "text-[var(--color-red)]"
-      : "text-[var(--color-text-secondary)]";
+      : "text-slate-300";
 
   let match: RegExpExecArray | null;
   while ((match = combined.exec(line)) !== null) {
