@@ -28,7 +28,7 @@ import ReactMarkdown from "react-markdown";
 import { Badge } from "@/components/ui/badge";
 import { CodeDiff } from "@/components/code-diff";
 import { RadarAnimation } from "@/components/radar-animation";
-import type { HealingEntry, PatchResult, PatchApprovalStatus } from "@/lib/api";
+import type { HealingEntry, PatchResult, PatchApprovalStatus, ValidationResult, GeneratedTestSuite } from "@/lib/api";
 
 /** Maps severity string → Badge variant */
 function severityVariant(s: string): "critical" | "high" | "medium" | "low" | "info" {
