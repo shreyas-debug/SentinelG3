@@ -30,6 +30,8 @@ from slowapi.util import get_remote_address
 
 from app.agents.auditor import AuditorAgent
 from app.agents.fixer import FixerAgent
+from app.agents.validator import ValidatorAgent
+from app.agents.test_generator import SecurityTestGenerator
 from app.config import settings
 from app.models.schemas import (
     AuditRequest,
@@ -809,12 +811,12 @@ async def run_scan(request: Request, body: ScanRequest):
                     )
 
                 healed = False
+
                 if patch.success and patch.fixed_code:
-                    # Log successful patch generation
                     yield _sse_event("log", {
                         "message": f"    ✓ Fix generated — {vuln.file_path}:{vuln.line_number}"
                     })
-                    
+
                     if auto_apply:
                         try:
                             await orchestrator.fixer.apply_patch(str(file_abs), patch.fixed_code)
@@ -828,9 +830,9 @@ async def run_scan(request: Request, body: ScanRequest):
                                 "message": f"    ✗ Not patched — {vuln.file_path}:{vuln.line_number} (apply failed: {exc})"
                             })
                     else:
-                        # Incremental Healing mode — patch NOT applied, user must approve
+                        # Incremental mode — awaiting user Test & Validate action
                         yield _sse_event("log", {
-                            "message": f"    ⏳ Fix ready for review — {vuln.file_path}:{vuln.line_number} (awaiting approval)"
+                            "message": f"    ⏳ Fix ready for review — {vuln.file_path}:{vuln.line_number} (awaiting validation)"
                         })
                 else:
                     yield _sse_event("log", {
@@ -1494,3 +1496,114 @@ async def reject_patch(
         reviewed_at=datetime.fromisoformat(now),
     )
 
+
+# ── POST /validate-patch-batch ───────────────────────────
+
+class ValidateBatchRequest(BaseModel):
+    """Request body for file-level batch patch validation."""
+    file_path: str = Field(description="Relative path of the file being validated.")
+    vulnerabilities: list[dict] = Field(description="All vulnerability dicts from this file.")
+    original_code: str = Field(description="Original file content before any patches.")
+    patched_code: str = Field(description="Final patched file content (all fixes applied).")
+
+
+@router.post("/validate-patch-batch", tags=["audit"])
+async def validate_patch_batch(body: ValidateBatchRequest):
+    """Validate ALL vulnerabilities in a file with ONE Gemini call.
+
+    Called by the Validation Suite panel when the user clicks 'Run Validation Suite'.
+    Groups validation by file so the file content is sent only once — token-efficient.
+    """
+    from app.models.schemas import Vulnerability as VulnSchema
+
+    try:
+        vulns = [VulnSchema.model_validate(v) for v in body.vulnerabilities]
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid vulnerability payload: {exc}")
+
+    # Validate all vulns in this file in one call
+    try:
+        validator = ValidatorAgent()
+        batch = await validator.validate_file_batch(
+            file_path=body.file_path,
+            vulnerabilities=vulns,
+            original_code=body.original_code,
+            patched_code=body.patched_code,
+        )
+    except Exception as exc:
+        logger.error("Batch validator failed for %s: %s", body.file_path, exc)
+        raise HTTPException(status_code=500, detail=f"Validation failed: {exc}")
+
+    # Generate test suite for the file if all fixes look good
+    generated_tests = None
+    if batch.all_fixed or batch.overall_confidence >= 0.6:
+        try:
+            test_gen = SecurityTestGenerator()
+            generated_tests = await test_gen.generate_file_tests(
+                file_path=body.file_path,
+                vulnerabilities=vulns,
+                patched_code=body.patched_code,
+                batch_result=batch,
+            )
+        except Exception as exc:
+            logger.warning("File test generation failed (non-fatal): %s", exc)
+
+    return {
+        "file_path": body.file_path,
+        **batch.model_dump(),
+        "generated_tests": generated_tests.model_dump() if generated_tests else None,
+    }
+
+
+# ── POST /validate-patch ──────────────────────────────────
+
+class ValidatePatchRequest(BaseModel):
+    """Request body for on-demand patch validation."""
+    vulnerability: dict = Field(description="Vulnerability model (as returned by /scan).")
+    original_code: str = Field(description="Original source code before the fix.")
+    patched_code: str = Field(description="Patched source code after the fix.")
+
+
+@router.post("/validate-patch", tags=["audit"])
+async def validate_patch_on_demand(body: ValidatePatchRequest):
+    """Run ValidatorAgent + SecurityTestGenerator on a patch, on-demand.
+
+    Called when the user clicks "Test & Validate" in the dashboard.
+    Returns validation results and generated test cases.
+    """
+    from app.models.schemas import Vulnerability as VulnSchema
+
+    try:
+        vuln = VulnSchema.model_validate(body.vulnerability)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid vulnerability payload: {exc}")
+
+    # Run validator
+    try:
+        validator = ValidatorAgent()
+        validation = await validator.validate_fix(
+            vulnerability=vuln,
+            original_code=body.original_code,
+            patched_code=body.patched_code,
+        )
+    except Exception as exc:
+        logger.error("Validator failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Validation failed: {exc}")
+
+    # Run test generator if fix confirmed
+    generated_tests = None
+    if validation.vulnerability_fixed:
+        try:
+            test_gen = SecurityTestGenerator()
+            generated_tests = await test_gen.generate_security_tests(
+                vulnerability=vuln,
+                patched_code=body.patched_code,
+                validation_result=validation,
+            )
+        except Exception as exc:
+            logger.warning("Test generation failed (non-fatal): %s", exc)
+
+    return {
+        "validation": validation.model_dump(),
+        "generated_tests": generated_tests.model_dump() if generated_tests else None,
+    }

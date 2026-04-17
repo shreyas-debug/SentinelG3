@@ -199,6 +199,8 @@ class HealingEntry(BaseModel):
     vulnerability: Vulnerability
     patch: PatchResult | None = None
     healed: bool = False
+    validation: "ValidationResult | None" = None
+    generated_tests: "GeneratedTestSuite | None" = None
 
 
 class HealingCycleSummary(BaseModel):
@@ -220,6 +222,73 @@ class PipelineStatusResponse(BaseModel):
         description="not_started | auditing | fixing | validating | done",
     )
     message: str = ""
+
+
+# ── Validation & Test Generation ─────────────────────────
+
+class ExploitAttempt(BaseModel):
+    """Single exploit test case used during validation."""
+
+    description: str = Field(description="What this exploit attempts.")
+    payload: str = Field(description="The exploit payload or command.")
+    attack_type: str = Field(description="e.g. SQL Injection, XSS, Path Traversal")
+    would_work_on_original: bool = Field(description="Does this exploit work on the original code?")
+    blocked_by_patch: bool = Field(description="Is this exploit blocked by the patch?")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence in this assessment.")
+
+
+class ValidationResult(BaseModel):
+    """Result of validating a security fix."""
+
+    vulnerability_fixed: bool = Field(description="Whether the vulnerability is confirmed fixed.")
+    confidence_score: float = Field(ge=0.0, le=1.0, description="Overall fix confidence (0–1).")
+    exploit_tests: list[ExploitAttempt] = Field(default_factory=list)
+    functional_impact: str = Field(
+        default="No breaking changes",
+        description="Describes functional side-effects of the patch.",
+    )
+    recommendation: str = Field(
+        default="Deploy",
+        description="'Deploy' if fix is solid, 'Needs revision' otherwise.",
+    )
+    reasoning: str = Field(default="", description="AI's reasoning summary.")
+
+
+class TestCase(BaseModel):
+    """A single generated security test case."""
+
+    name: str = Field(description="Function name, e.g. test_sql_injection_blocked.")
+    description: str = Field(description="What this test verifies.")
+    code: str = Field(description="Full pytest test code.")
+    priority: str = Field(description="critical | high | medium | low")
+
+
+class VulnValidationItem(BaseModel):
+    """Per-vulnerability result inside a file-batch validation call."""
+
+    issue_key: str = Field(description="Short identifier matching the vulnerability issue text.")
+    vulnerability_fixed: bool = Field(description="Whether this specific vulnerability is confirmed fixed.")
+    confidence_score: float = Field(ge=0.0, le=1.0, description="Confidence that this fix is effective.")
+    exploit_tests: list[ExploitAttempt] = Field(default_factory=list)
+    recommendation: str = Field(default="Deploy", description="'Deploy' or 'Needs revision'.")
+
+
+class FileBatchValidationResult(BaseModel):
+    """Gemini response schema for validating all vulnerabilities in one file."""
+
+    all_fixed: bool = Field(description="True if ALL vulnerabilities in the file are confirmed fixed.")
+    overall_confidence: float = Field(ge=0.0, le=1.0, description="Average confidence across all fixes.")
+    per_vuln: list[VulnValidationItem] = Field(default_factory=list, description="One result per vulnerability.")
+    functional_impact: str = Field(default="No breaking changes", description="Side-effects of the patches.")
+    reasoning: str = Field(default="", description="AI reasoning summary.")
+
+
+class GeneratedTestSuite(BaseModel):
+    """Test suite generated for a fixed vulnerability."""
+
+    framework: str = Field(default="pytest", description="Test framework used.")
+    test_cases: list[TestCase] = Field(default_factory=list)
+    imports: str = Field(default="", description="Required import statements.")
 
 
 # ── Patch review request/response ─────────────────────────

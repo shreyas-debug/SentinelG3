@@ -43,6 +43,37 @@ export interface PatchResult {
   rejection_reason?: string;
 }
 
+export interface ExploitAttempt {
+  description: string;
+  payload: string;
+  attack_type: string;
+  would_work_on_original: boolean;
+  blocked_by_patch: boolean;
+  confidence: number;
+}
+
+export interface ValidationResult {
+  vulnerability_fixed: boolean;
+  confidence_score: number;
+  exploit_tests: ExploitAttempt[];
+  functional_impact: string;
+  recommendation: string;
+  reasoning: string;
+}
+
+export interface TestCase {
+  name: string;
+  description: string;
+  code: string;
+  priority: "critical" | "high" | "medium" | "low";
+}
+
+export interface GeneratedTestSuite {
+  framework: string;
+  test_cases: TestCase[];
+  imports: string;
+}
+
 export interface HealingEntry {
   vulnerability: Vulnerability;
   patch: PatchResult | null;
@@ -53,6 +84,10 @@ export interface HealingEntry {
   model_used?: string;
   /** @deprecated Use auditor_thought / fixer_thought */
   thought_text?: string;
+  validation?: ValidationResult | null;
+  generated_tests?: GeneratedTestSuite | null;
+  /** True if the user chose to skip validation for this patch. */
+  validation_skipped?: boolean;
 }
 
 export interface HealingSummary {
@@ -84,6 +119,8 @@ export type SSEEvent =
   | { type: "summary"; data: HealingSummary }
   | { type: "pr"; data: PRResult }
   | { type: "no_pr_info"; data: { message: string; instructions: string[]; reason: string; healed_count: number } }
+  | { type: "validation"; data: { patch_id: string; validation: ValidationResult } }
+  | { type: "tests_generated"; data: { patch_id: string; tests: GeneratedTestSuite } }
   | { type: "error"; data: { message: string } };
 
 // ── Helper ─────────────────────────────────────────────
@@ -488,6 +525,71 @@ export function startScan(
     });
 
   return controller;
+}
+
+// ── On-demand Patch Validation ──────────────────────────
+
+/** Per-vulnerability result inside a file-batch validation. */
+export interface VulnValidationItem {
+  issue_key: string;
+  vulnerability_fixed: boolean;
+  confidence_score: number;
+  exploit_tests: ExploitAttempt[];
+  recommendation: string;
+}
+
+/** Full result for a single file validated in one Gemini call. */
+export interface FileBatchValidation {
+  file_path: string;
+  all_fixed: boolean;
+  overall_confidence: number;
+  per_vuln: VulnValidationItem[];
+  functional_impact: string;
+  reasoning: string;
+  generated_tests: GeneratedTestSuite | null;
+}
+
+/**
+ * Validates ALL vulnerabilities in one file in a single Gemini call.
+ * Called by the Validation Suite panel — token-efficient.
+ */
+export async function validatePatchBatch(data: {
+  file_path: string;
+  vulnerabilities: Vulnerability[];
+  original_code: string;
+  patched_code: string;
+}): Promise<FileBatchValidation> {
+  const res = await fetch(`${API_BASE}/validate-patch-batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+    throw new Error(err.detail ?? `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Calls ValidatorAgent + SecurityTestGenerator for a single patch.
+ * Kept for single-issue use cases.
+ */
+export async function validatePatch(data: {
+  vulnerability: Vulnerability;
+  original_code: string;
+  patched_code: string;
+}): Promise<{ validation: ValidationResult; generated_tests: GeneratedTestSuite | null }> {
+  const res = await fetch(`${API_BASE}/validate-patch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: "Unknown error" }));
+    throw new Error(err.detail ?? `HTTP ${res.status}`);
+  }
+  return res.json();
 }
 
 /**

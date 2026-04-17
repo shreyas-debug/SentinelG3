@@ -559,87 +559,231 @@ function RejectFix({
   );
 }
 
-/* ── Approve Fix ─────────────────────────────────────── */
-function ApproveFix({
+/* ── (ValidateAndApplyFix removed — validation is now handled by ValidationSuitePanel) ── */
+function _unused_ValidateAndApplyFix({
   entry,
   onApproved,
   onLog,
   onApplyPatches,
+  onValidated,
 }: {
   entry: HealingEntry;
   onApproved: () => void;
   onLog: (msg: string) => void;
   onApplyPatches?: (patches: { file_path: string; new_content: string }[]) => Promise<{ success: boolean; message: string; pr_url?: string }>;
+  onValidated?: (validation: ValidationResult, tests: GeneratedTestSuite | null) => void;
 }) {
-  const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  type VState = "idle" | "validating" | "validated_pass" | "validated_fail" | "applying" | "applied" | "apply_error" | "skipped";
+  const [state, setState] = useState<VState>("idle");
   const [errMsg, setErrMsg] = useState("");
+  const [localValidation, setLocalValidation] = useState<ValidationResult | null>(entry.validation ?? null);
+  const [localTests, setLocalTests] = useState<GeneratedTestSuite | null>(entry.generated_tests ?? null);
+  const [showExploits, setShowExploits] = useState(false);
 
-  if (entry.healed) {
+  // Sync if parent provides validation (e.g. pre-populated entry)
+  useEffect(() => {
+    if (entry.validation) {
+      setLocalValidation(entry.validation);
+      if (entry.generated_tests) setLocalTests(entry.generated_tests);
+      setState(entry.validation.vulnerability_fixed ? "validated_pass" : "validated_fail");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (entry.healed || state === "applied") {
     return (
       <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400">
-        <CheckCircle2 className="h-3.5 w-3.5" />
-        Patch applied
+        <CheckCircle2 className="h-3.5 w-3.5" /> Patch applied
       </span>
     );
   }
   if (entry.patch?.status === "rejected") return null;
   if (!entry.patch?.success || !entry.patch?.fixed_code) return null;
 
-  if (state === "done") {
+  const doApply = async (skipConfirm = false) => {
+    if (!onApplyPatches) {
+      // ZIP/GitHub bulk mode — no per-card apply; just mark validated
+      return;
+    }
+    if (!entry.patch) return;
+    setState("applying");
+    const patch = { file_path: entry.patch.file_path, new_content: entry.patch.fixed_code };
+    const result = await onApplyPatches([patch]);
+    if (result.success) {
+      setState("applied");
+      onApproved();
+      onLog(`  ✓ Patch applied → ${entry.vulnerability.file_path}:${entry.vulnerability.line_number}`);
+    } else {
+      setState("apply_error");
+      setErrMsg(result.message);
+      onLog(`  ✗ Apply failed → ${entry.vulnerability.file_path}: ${result.message}`);
+    }
+  };
+
+  if (state === "validating") {
     return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400">
-        <CheckCircle2 className="h-3.5 w-3.5" />
-        Patch applied to disk
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-purple-400">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Testing &amp; Validating…
       </span>
     );
   }
 
-  if (state === "error") {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-red-400">
-        <AlertTriangle className="h-3.5 w-3.5" />
-        {errMsg || "Apply failed"}
-      </span>
-    );
-  }
-
-  if (state === "loading") {
+  if (state === "applying") {
     return (
       <span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--color-text-muted)]">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        Applying patch…
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Applying patch…
       </span>
     );
   }
 
+  if (state === "apply_error") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-red-400">
+        <AlertTriangle className="h-3.5 w-3.5" /> {errMsg || "Apply failed"}
+      </span>
+    );
+  }
+
+  if (state === "skipped") {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="inline-flex items-center gap-1 text-[10px] text-yellow-400 border border-yellow-500/40 bg-yellow-500/10 rounded px-2 py-0.5">
+          <AlertTriangle className="h-3 w-3" /> Validation skipped
+        </span>
+        {onApplyPatches && (
+          <button onClick={() => doApply(true)} className="inline-flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-bold bg-emerald-600/20 border border-emerald-500 text-emerald-400 hover:bg-emerald-600/30 transition-all active:scale-95">
+            <CheckCircle2 className="h-3.5 w-3.5" /> Apply Fix
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if ((state === "validated_pass" || state === "validated_fail") && localValidation) {
+    const passed = localValidation.vulnerability_fixed;
+    const pct = Math.round(localValidation.confidence_score * 100);
+    return (
+      <div className="flex flex-col gap-2 w-full">
+        {/* Validation summary badge */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`inline-flex items-center gap-1 text-[10px] font-bold border rounded px-2 py-0.5 ${
+            passed
+              ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/10"
+              : "text-yellow-400 border-yellow-500/40 bg-yellow-500/10"
+          }`}>
+            {passed ? <CheckCircle className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+            {passed ? "Validated" : "Needs Revision"} · {pct}% confidence
+          </span>
+
+          {/* Exploit tests toggle */}
+          {localValidation.exploit_tests.length > 0 && (
+            <button
+              onClick={() => setShowExploits((v) => !v)}
+              className="text-[9px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] underline"
+            >
+              {showExploits ? "Hide" : "Show"} {localValidation.exploit_tests.length} exploit tests
+            </button>
+          )}
+
+          {/* Tests badge */}
+          {localTests && localTests.test_cases.length > 0 && (
+            <span className="inline-flex items-center gap-1 text-[9px] text-purple-400 border border-purple-500/30 bg-purple-500/10 rounded px-1.5 py-0.5">
+              <FlaskConical className="h-2.5 w-2.5" /> {localTests.test_cases.length} tests generated
+            </span>
+          )}
+        </div>
+
+        {/* Exploit tests detail */}
+        {showExploits && (
+          <div className="space-y-1 pl-1">
+            {localValidation.exploit_tests.map((t, i) => (
+              <div key={i} className="flex items-center justify-between gap-2 text-[10px] p-1.5 rounded bg-[var(--color-bg)] border border-[var(--color-border)]">
+                <span className="truncate text-[var(--color-text-muted)]">
+                  <span className="font-semibold text-[var(--color-text)]">{t.attack_type}:</span> {t.payload}
+                </span>
+                {t.blocked_by_patch
+                  ? <CheckCircle className="h-3 w-3 text-emerald-500 shrink-0" />
+                  : <XCircle className="h-3 w-3 text-red-500 shrink-0" />
+                }
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {onApplyPatches && (
+            <button
+              onClick={() => doApply()}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-bold transition-all active:scale-95 ${
+                passed
+                  ? "bg-emerald-600/20 border border-emerald-500 text-emerald-400 hover:bg-emerald-600/30"
+                  : "bg-yellow-600/20 border border-yellow-500 text-yellow-400 hover:bg-yellow-600/30"
+              }`}
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              {passed ? "Apply Fix" : "Apply Anyway"}
+            </button>
+          )}
+          {!passed && (
+            <span className="text-[9px] text-[var(--color-text-muted)]">
+              Fix may not fully resolve the vulnerability
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Default: idle — show "Test & Validate" button
   return (
-    <button
-      onClick={async () => {
-        if (!onApplyPatches || !entry.patch) {
-          setState("error");
-          setErrMsg("Missing target");
-          return;
-        }
-        setState("loading");
-        const patch = { file_path: entry.patch.file_path, new_content: entry.patch.fixed_code };
-        const result = await onApplyPatches([patch]);
-        if (result.success) {
-          setState("done");
-          onApproved();
-          onLog(`  ✓ Patch approved and applied → ${entry.vulnerability.file_path}:${entry.vulnerability.line_number}`);
-        } else {
-          setState("error");
-          setErrMsg(result.message);
-          onLog(`  ✗ Patch apply failed → ${entry.vulnerability.file_path}: ${result.message}`);
-        }
-      }}
-      className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold
-                 bg-emerald-600/20 border border-emerald-500 text-emerald-400
-                 hover:bg-emerald-600/30 transition-all active:scale-95 shadow-sm"
-    >
-      <CheckCircle2 className="h-3.5 w-3.5" />
-      Approve &amp; Apply Fix
-    </button>
+    <div className="flex items-center gap-2">
+      <button
+        onClick={async () => {
+          if (!entry.patch?.original_code || !entry.patch?.fixed_code) return;
+          setState("validating");
+          onLog(`  🔍 Testing & validating fix for ${entry.vulnerability.file_path}:${entry.vulnerability.line_number}…`);
+          try {
+            const result = await validatePatch({
+              vulnerability: entry.vulnerability,
+              original_code: entry.patch.original_code,
+              patched_code: entry.patch.fixed_code,
+            });
+            setLocalValidation(result.validation);
+            setLocalTests(result.generated_tests);
+            onValidated?.(result.validation, result.generated_tests);
+            setState(result.validation.vulnerability_fixed ? "validated_pass" : "validated_fail");
+            const pct = Math.round(result.validation.confidence_score * 100);
+            onLog(`  ${result.validation.vulnerability_fixed ? "✅" : "⚠️"} Validation: ${result.validation.vulnerability_fixed ? "Fixed" : "Needs revision"} (${pct}% confidence)`);
+            if (result.generated_tests) {
+              onLog(`  🧪 Generated ${result.generated_tests.test_cases.length} test case(s)`);
+            }
+          } catch (err) {
+            setState("idle");
+            onLog(`  ✗ Validation failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }}
+        className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold
+                   bg-purple-600/20 border border-purple-500 text-purple-400
+                   hover:bg-purple-600/30 transition-all active:scale-95 shadow-sm"
+      >
+        <FlaskConical className="h-3.5 w-3.5" />
+        Test &amp; Validate
+      </button>
+      <button
+        onClick={() => {
+          onValidated?.(
+            { vulnerability_fixed: false, confidence_score: 0, exploit_tests: [], functional_impact: "", recommendation: "Skipped", reasoning: "User skipped validation." },
+            null,
+          );
+          setState("skipped");
+          onLog(`  ⚠️ Validation skipped for ${entry.vulnerability.file_path}:${entry.vulnerability.line_number}`);
+        }}
+        className="text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] underline transition-colors"
+      >
+        skip
+      </button>
+    </div>
   );
 }
 
@@ -657,7 +801,6 @@ function EntryRow({
   entry,
   index,
   onLog,
-  onApplyPatches,
   repoRoot,
   onPatchGenerated,
   onRollback,
@@ -668,7 +811,6 @@ function EntryRow({
   entry: HealingEntry;
   index: number;
   onLog: (msg: string) => void;
-  onApplyPatches?: (patches: { file_path: string; new_content: string }[]) => Promise<{ success: boolean; message: string; pr_url?: string }>;
   repoRoot?: string;
   onPatchGenerated?: (index: number, patch: PatchResult, fixerThought: string, modelUsed: string) => void;
   onRollback?: (index: number) => void;
@@ -815,12 +957,12 @@ function EntryRow({
                     onRejected={() => setRejected(true)}
                     onLog={onLog}
                   />
-                  <ApproveFix
-                    entry={{ ...entry, patch: localPatch, healed }}
-                    onApproved={() => setHealed(true)}
-                    onLog={onLog}
-                    onApplyPatches={onApplyPatches}
-                  />
+                  {/* Validation & deploy is handled by the ValidationSuitePanel below */}
+                  {!healed && (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-purple-400/70 border border-purple-500/20 bg-purple-500/5 rounded px-2 py-1 font-mono">
+                      awaiting validation
+                    </span>
+                  )}
                 </>
               )}
               {rejected && (
@@ -899,7 +1041,7 @@ function BulkActionToolbar({
           className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-bold bg-emerald-600/20 border border-emerald-500 text-emerald-400 hover:bg-emerald-600/30 transition-all"
         >
           <CheckCircle2 className="h-3.5 w-3.5" />
-          Approve &amp; Apply All
+          Mark Reviewed
         </button>
         <button
           onClick={onRejectSelected}
@@ -927,7 +1069,6 @@ export function HealingHistory({
   scanning,
   phase,
   onLog,
-  onApplyPatches,
   repoRoot,
   onPatchGenerated,
   onRollback,
@@ -936,7 +1077,6 @@ export function HealingHistory({
   scanning?: boolean;
   phase?: string;
   onLog?: (msg: string) => void;
-  onApplyPatches?: (patches: { file_path: string; new_content: string }[]) => Promise<{ success: boolean; message: string; pr_url?: string }>;
   repoRoot?: string;
   onPatchGenerated?: (index: number, patch: PatchResult, fixerThought: string, modelUsed: string) => void;
   onRollback?: (index: number) => void;
@@ -953,27 +1093,11 @@ export function HealingHistory({
     });
   }, []);
 
-  const handleApproveSelected = useCallback(async () => {
-    if (!onApplyPatches) return;
-    const patches = Array.from(selectedIndices)
-      .map((i) => entries[i])
-      .filter((e) => e.patch?.success && e.patch?.fixed_code && !e.healed)
-      .map((e) => ({ file_path: e.patch!.file_path, new_content: e.patch!.fixed_code }));
-
-    if (patches.length === 0) {
-      log("  ⚠ No approvable patches in selection.");
-      return;
-    }
-
-    log(`  ▶ Bulk-applying ${patches.length} patches…`);
-    const result = await onApplyPatches(patches);
-    if (result.success) {
-      log(`  ✓ Bulk-applied ${patches.length} patches.`);
-    } else {
-      log(`  ✗ Bulk-apply failed: ${result.message}`);
-    }
+  const handleApproveSelected = useCallback(() => {
+    // Deployment is now handled by the Validation Suite panel below
+    log("  ℹ Use the Validation Suite to deploy selected patches.");
     setSelectedIndices(new Set());
-  }, [selectedIndices, entries, onApplyPatches, log]);
+  }, [log]);
 
   const handleRejectSelected = useCallback(() => {
     log(`  ✗ Bulk-rejected ${selectedIndices.size} patches.`);
@@ -1079,7 +1203,6 @@ export function HealingHistory({
             entry={entry}
             index={i}
             onLog={log}
-            onApplyPatches={onApplyPatches}
             repoRoot={repoRoot}
             onPatchGenerated={onPatchGenerated}
             onRollback={onRollback}

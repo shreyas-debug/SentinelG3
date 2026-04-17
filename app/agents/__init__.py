@@ -10,5 +10,6 @@ Three-stage autonomous pipeline:
 from app.agents.auditor import AuditorAgent
 from app.agents.fixer import FixerAgent
 from app.agents.validator import ValidatorAgent
+from app.agents.test_generator import SecurityTestGenerator
 
-__all__ = ["AuditorAgent", "FixerAgent", "ValidatorAgent"]
+__all__ = ["AuditorAgent", "FixerAgent", "ValidatorAgent", "SecurityTestGenerator"]

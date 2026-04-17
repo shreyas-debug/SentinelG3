@@ -28,6 +28,7 @@ import { StatsBar } from "@/components/stats-bar";
 import { ThinkingIndicator } from "@/components/thinking-indicator";
 import { StatusBadge } from "@/components/status-badge";
 import { VulnerabilityFilters, type SeverityFilter } from "@/components/vulnerability-filters";
+import { ValidationSuitePanel } from "@/components/validation-suite-panel";
 import { startScan, startZipScan, generateReport, downloadSarifReport, downloadJsonReport, downloadCsvReport, applyBatchPatches, type HealingEntry, type HealingSummary, type PRResult, type SSEEvent, type PatchResult } from "@/lib/api";
 import JSZip from "jszip";
 
@@ -494,6 +495,7 @@ export default function Dashboard() {
     });
   };
 
+
   const handleDownloadPatchedFiles = async () => {
     const readyEntries = filteredEntries.filter(
       (e) => e.patch?.success && e.patch?.fixed_code && !e.healed
@@ -636,6 +638,24 @@ export default function Dashboard() {
                 setStats((prev) => ({ ...prev, healed: prev.healed + 1 }));
               }
               break;
+            case "validation": {
+              const { patch_id, validation } = event.data;
+              setEntries((prev) =>
+                prev.map((e) =>
+                  e.patch?.patch_id === patch_id ? { ...e, validation } : e,
+                ),
+              );
+              break;
+            }
+            case "tests_generated": {
+              const { patch_id, tests } = event.data;
+              setEntries((prev) =>
+                prev.map((e) =>
+                  e.patch?.patch_id === patch_id ? { ...e, generated_tests: tests } : e,
+                ),
+              );
+              break;
+            }
             case "summary":
               setActiveFix(null);
               setPhase("complete");
@@ -712,6 +732,24 @@ export default function Dashboard() {
               setStats((prev) => ({ ...prev, healed: prev.healed + 1 }));
             }
             break;
+          case "validation": {
+            const { patch_id, validation } = event.data;
+            setEntries((prev) =>
+              prev.map((e) =>
+                e.patch?.patch_id === patch_id ? { ...e, validation } : e,
+              ),
+            );
+            break;
+          }
+          case "tests_generated": {
+            const { patch_id, tests } = event.data;
+            setEntries((prev) =>
+              prev.map((e) =>
+                e.patch?.patch_id === patch_id ? { ...e, generated_tests: tests } : e,
+              ),
+            );
+            break;
+          }
           case "summary":
             setActiveFix(null);
             setPhase("complete");
@@ -1193,60 +1231,13 @@ export default function Dashboard() {
               )}
             </h2>
             
-            {/* Bulk Action Buttons - Conditional based on scan mode */}
-            {filteredEntries.some((e) => e.patch?.success && e.patch?.fixed_code && !e.healed) && (
-              <div className="flex items-center gap-2">
-                {/* Show Download button for: GitHub without token OR Upload mode */}
-                {((scanMode === "github" && (!githubToken || !createPr)) || scanMode === "upload") && (
-                  <button
-                    onClick={handleDownloadPatchedFiles}
-                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold bg-cyan-600/20 border border-cyan-500 text-cyan-400 hover:bg-cyan-600/30 transition-all active:scale-95 shadow-sm"
-                    title="Download patched files as a ZIP archive"
-                  >
-                    <Download className="h-3.5 w-3.5" /> Download as ZIP
-                  </button>
-                )}
-                
-                {/* Show Apply to Local Files for local mode */}
-                {scanMode === "local" && (
-                  <button
-                    onClick={handleApplyAllUnfixed}
-                    disabled={isApplyingAll || scanning}
-                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold bg-emerald-600/20 border border-emerald-500 text-emerald-400 hover:bg-emerald-600/30 transition-all active:scale-95 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Apply patches directly to your local files (creates backups)"
-                  >
-                    {isApplyingAll ? (
-                      <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Applying to Files…</>
-                    ) : (
-                      <><Shield className="h-3.5 w-3.5" /> Apply to Local Files</>
-                    )}
-                  </button>
-                )}
-                
-                {/* Show Create PR button for GitHub with token */}
-                {scanMode === "github" && githubToken && createPr && (
-                  <button
-                    onClick={handleApplyAllUnfixed}
-                    disabled={isApplyingAll || scanning}
-                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-[11px] font-bold bg-emerald-600/20 border border-emerald-500 text-emerald-400 hover:bg-emerald-600/30 transition-all active:scale-95 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Create a Pull Request on GitHub with the fixes"
-                  >
-                    {isApplyingAll ? (
-                      <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Creating PR…</>
-                    ) : (
-                      <><GitPullRequest className="h-3.5 w-3.5" /> Create Pull Request</>
-                    )}
-                  </button>
-                )}
-              </div>
-            )}
+            {/* Deploy actions moved to ValidationSuitePanel below */}
           </div>
           <HealingHistory
             entries={filteredEntries}
             scanning={scanning}
             phase={phase}
             onLog={pushLog}
-            onApplyPatches={handleApplyPatches}
             repoRoot={activeTarget}
             onPatchGenerated={(index, patch, fixerThought, modelUsed) => {
               setEntries((prev) => {
@@ -1276,6 +1267,30 @@ export default function Dashboard() {
             }}
           />
         </section>
+
+        {/* Validation Suite Panel — appears once patches are ready */}
+        {phase !== "idle" && (
+          <ValidationSuitePanel
+            entries={entries}
+            scanMode={scanMode}
+            githubToken={githubToken}
+            createPr={createPr}
+            isApplyingAll={isApplyingAll}
+            scanning={scanning}
+            onDownloadZip={handleDownloadPatchedFiles}
+            onApplyLocal={async () => {
+              setIsApplyingAll(true);
+              await handleApplyAllUnfixed();
+              setIsApplyingAll(false);
+            }}
+            onCreatePR={async () => {
+              setIsApplyingAll(true);
+              await handleApplyAllUnfixed();
+              setIsApplyingAll(false);
+            }}
+            onLog={pushLog}
+          />
+        )}
 
         {/* Footer */}
         <footer className="text-center text-xs text-[var(--color-text-muted)] pt-8 pb-4">
